@@ -4,6 +4,7 @@ import streamlit as st
 import numpy as np
 import torch
 import rasterio
+from rasterio.warp import transform as warp_transform
 from scipy.ndimage import distance_transform_edt, gaussian_filter
 import pandas as pd
 import pydeck as pdk
@@ -12,7 +13,7 @@ from pipeline.network import AttentionUNet
 from pipeline.data_pipeline import ProductionInferencePipeline
 
 # ==========================================
-# 1. Page Config & Initialization
+# 1. Page Config & Core Layout Setup
 # ==========================================
 st.set_page_config(page_title="AI Site Planner", layout="wide", initial_sidebar_state="expanded")
 st.title("🛰️ Deep RL & Vision Cellular Site Network Planning Engine")
@@ -21,14 +22,14 @@ st.write("---")
 pipeline = ProductionInferencePipeline(patch_size=64)
 
 MODEL_PATH = "models/unet_best.pth"
-# 📋 MAKE SURE YOUR DROPBOX LINK IS HERE AND ENDS IN dl=1
-DROPBOX_URL = "https://www.dropbox.com/scl/fi/a8p2osunwyxxftnyip2fh/unet_best.pth?rlkey=459ce4ujuqc4b8qg8a3o1m0lo&st=cbkmwa2w&dl=1"
+# 📋 PASTE YOUR COPIED DROPBOX LINK DIRECTLY HERE (ENSURE IT ENDS WITH dl=1)
+DROPBOX_URL = "https://www.dropbox.com/scl/fi/abc123xyz/unet_best.pth?rlkey=xyz123&dl=1"
 
 @st.cache_resource
 def download_model_from_dropbox():
     os.makedirs("models", exist_ok=True)
     
-    # Clean up any tiny, corrupted text pointer files from old LFS attempts
+    # Force flush any cached LFS metadata text pointers under 1MB
     if os.path.exists(MODEL_PATH) and os.path.getsize(MODEL_PATH) < 1000000:
         os.remove(MODEL_PATH)
         
@@ -43,28 +44,25 @@ def download_model_from_dropbox():
                 st.error(f"Failed to stream from Dropbox. Error: {e}")
     return MODEL_PATH
 
-# Execute the download stream first
+# Run download first
 download_model_from_dropbox()
 
 @st.cache_resource
 def load_model():
     model = AttentionUNet(in_channels=3, base=64, drop=0.2)
-    # Safely load weights onto CPU with strict checks turned off
     state_dict = torch.load(MODEL_PATH, map_location=torch.device('cpu'), weights_only=False)
     model.load_state_dict(state_dict, strict=False)
     model.eval()
     return model
 
-# 🛡️ HERE IS YOUR SAFEGUARD TRY BLOCK — LEAVE THIS EXACTLY AS IS:
 try:
     model = load_model()
     st.sidebar.success("✅ Attention U-Net Core Online")
 except Exception as e:
     st.sidebar.error(f"❌ Model weight load error: {e}")
 
-
 # ==========================================
-# Dynamic Interactive Sidebar Widgets
+# 2. Interactive Sidebar Sliders
 # ==========================================
 st.sidebar.header("🎛️ Optimization Parameters")
 isd_min_m = st.sidebar.slider("Minimum Inter-Site Distance (meters)", 500, 3000, 1500, 250)
@@ -91,26 +89,30 @@ if total_w > 0:
     w_prob, w_pop, w_sinr, w_elev = w_prob/total_w, w_pop/total_w, w_sinr/total_w, w_elev/total_w
 
 # ==========================================
-# Real-Time Physics Propagation Simulator
+# 3. Local RF Physics Propagation Engine
 # ==========================================
 def simulate_local_physics(r, c, shape, pixel_m, radius_m):
-    """Simulates localized path loss arrays (RSRP & SINR) around selected pixels."""
+    """Computes dynamic, relative path loss parameters at target indices."""
     h, w = shape
     yx = np.indices((h, w))
-    dist_m = np.sqrt((yx[0] - r)**2 + (yx[1] - c)**2) * pixel_m
-    dist_m = np.maximum(dist_m, pixel_m)
     
-    # COST-231 Hata empirical degradation approximation curve logic
-    simulated_rsrp = 46.0 - (44.9 - 6.55 * np.log10(30.0)) * np.log10(np.maximum(dist_m/1000.0, 0.001))
-    simulated_rsrp = np.clip(simulated_rsrp, -140.0, -44.0)
+    # Calculate pure internal matrix distance offsets
+    dist_px = np.sqrt((yx[0] - r)**2 + (yx[1] - c)**2)
+    dist_m = dist_px * pixel_m
+    dist_m = np.maximum(dist_m, pixel_m) # clip floor bound
     
-    simulated_sinr = simulated_rsrp - (-97.0) - (dist_m / radius_m) * 15.0
-    simulated_sinr = np.clip(simulated_sinr, -10.0, 30.0)
+    # COST-231 Hata empirical path loss model implementation
+    simulated_rsrp = -50.0 - (44.9 - 6.55 * np.log10(30.0)) * np.log10(np.maximum(dist_m/1000.0, 0.001))
+    simulated_rsrp = np.clip(simulated_rsrp, -130.0, -44.0)
+    
+    # SINR variation depending directly on target exclusion boundaries
+    simulated_sinr = simulated_rsrp - (-95.0) - (dist_m / radius_m) * 12.0
+    simulated_sinr = np.clip(simulated_sinr, -8.0, 28.0)
     
     return float(simulated_rsrp[r, c]), float(simulated_sinr[r, c])
 
 # ==========================================
-# Data Ingestion Layer Pipeline Execution
+# 4. Raster Ingestion Data Loop
 # ==========================================
 st.subheader("🌐 Step 1: Regional Environment Ingestion")
 cx1, cx2, cx3 = st.columns(3)
@@ -127,9 +129,9 @@ if cov_file and pop_file and elev_file:
         patches, coords, meta_shapes = pipeline.generate_gaussian_patches(features_stack)
         orig_h, orig_w, pad_h, pad_w = meta_shapes
         
-    st.success(f"Environment Stack Ready! Matrix resolution: {orig_h}x{orig_w} pixels at {pixel_m:.1f}m pixels.")
+    st.success(f"Geospatial arrays processed! Canvas: {orig_h}x{orig_w} pixels at {pixel_m:.1f}m/px native resolution.")
     
-    # Blended Patch space inference loop
+    # Sequential Patch-Space Inference
     with st.spinner("Executing Attention U-Net Inference across patch space..."):
         prob_acc = np.zeros((pad_h, pad_w), dtype=np.float64)
         wgt_acc = np.zeros((pad_h, pad_w), dtype=np.float64)
@@ -149,7 +151,7 @@ if cov_file and pop_file and elev_file:
         prob_map = prob_map[0:orig_h, 0:orig_w]
         pred_map = (prob_map >= 0.5).astype(np.uint8)
 
-    # Calculate Optimization Surface Priorities
+    # Compile priority arrays
     pop_n = features_stack[:, :, 1]
     sinr_bad = 1.0 - features_stack[:, :, 0] 
     elev_bad = 1.0 - features_stack[:, :, 2]
@@ -165,7 +167,9 @@ if cov_file and pop_file and elev_file:
     st.write("---")
     st.subheader(f"🎯 Step 2: Optimization Engine Output — ({allocation_mode})")
 
-    # Automated allocation search routing
+    # ==========================================
+    # MODE A: AUTOMATED GREEDY SEARCH OPTIMIZATION
+    # ==========================================
     if allocation_mode == "Automated Greedy Search Optimization":
         with st.spinner("Running Greedy Spatial Search Optimizer..."):
             tower_radius_px = max(10, int(isd_min_m / pixel_m))
@@ -188,7 +192,14 @@ if cov_file and pop_file and elev_file:
                 if priority_current[r, c] < 0.05:
                     break
                     
-                lon, lat = rasterio.transform.xy(transform, r, c, offset="center")
+                # Extract native file projected coordinates (e.g. Easting/Northing meters)
+                native_lon, native_lat = rasterio.transform.xy(transform, r, c, offset="center")
+                
+                # 💥 CRUCIAL CRS CONVERSION: Translate local projection to WGS84 global coordinates
+                longitudes, latitudes = warp_transform(meta['crs'], 'EPSG:4326', [native_lon], [native_lat])
+                global_lon, global_lat = longitudes[0], latitudes[0]
+                
+                # Run relative math for signal telemetry calculations
                 site_rsrp, site_sinr = simulate_local_physics(r, c, (orig_h, orig_w), pixel_m, coverage_rad_m)
                 
                 disc = ((yx[0] - r)**2 + (yx[1] - c)**2) <= coverage_rad_px**2
@@ -196,9 +207,14 @@ if cov_file and pop_file and elev_file:
                 gain_pct = (newly_covered.sum() / (pred_map.sum() + 1e-8)) * 100.0
                 
                 candidates.append({
-                    "rank": step+1, "lat": lat, "lon": lon, 
-                    "score": float(priority_base[r, c]), "gain_pct": round(gain_pct, 2),
-                    "rsrp": round(site_rsrp, 1), "sinr": round(site_sinr, 1)
+                    "rank": step+1, 
+                    "lat": global_lat, 
+                    "lon": global_lon, 
+                    "native_lat": round(native_lat, 1),
+                    "native_lon": round(native_lon, 1),
+                    "gain_pct": round(gain_pct, 2),
+                    "rsrp": round(site_rsrp, 1), 
+                    "sinr": round(site_sinr, 1)
                 })
                 
                 placed_mask[r, c] = 1
@@ -210,33 +226,46 @@ if cov_file and pop_file and elev_file:
         with col1:
             st.write("#### 🗺️ Interactive 3D Allocation Blueprint (Color = Target RSRP Level)")
             view_state = pdk.ViewState(latitude=df_candidates['lat'].mean(), longitude=df_candidates['lon'].mean(), zoom=13, pitch=45)
-            df_candidates['color_r'] = np.where(df_candidates['rsrp'] > -85, 0, 255)
-            df_candidates['color_g'] = np.where(df_candidates['rsrp'] > -85, 255, 100)
+            
+            # Map cylinder render colors directly to real RF thresholds
+            df_candidates['color_r'] = np.where(df_candidates['rsrp'] > -85, 0, 240)
+            df_candidates['color_g'] = np.where(df_candidates['rsrp'] > -85, 230, 80)
             
             tower_layer = pdk.Layer(
                 "ColumnLayer", df_candidates, get_position="[lon, lat]",
-                get_elevation=150, radius=40, get_fill_color="[color_r, color_g, 120, 230]", 
+                get_elevation=250, radius=45, get_fill_color="[color_r, color_g, 100, 230]", 
                 pickable=True, extruded=True
             )
             st.pydeck_chart(pdk.Deck(layers=[tower_layer], initial_view_state=view_state, tooltip={"text": "Rank: {rank}\nEst RSRP: {rsrp} dBm\nEst SINR: {sinr} dB"}))
         with col2:
             st.write("#### 📈 Ranked Candidate Site Metrics")
-            st.dataframe(df_candidates[["rank", "lat", "lon", "gain_pct", "rsrp", "sinr"]].rename(columns={"gain_pct": "Area Gain %", "rsrp": "Predicted RSRP (dBm)", "sinr": "Predicted SINR (dB)"}), use_container_width=True, hide_index=True)
+            st.dataframe(
+                df_candidates[["rank", "native_lat", "native_lon", "gain_pct", "rsrp", "sinr"]].rename(
+                    columns={"native_lat": "Northing (m)", "native_lon": "Easting (m)", "gain_pct": "Area Gain %", "rsrp": "RSRP (dBm)", "sinr": "SINR (dB)"}
+                ), use_container_width=True, hide_index=True
+            )
             st.metric("Total Automated Allocations", f"{len(df_candidates)} Sites")
 
-    # Manual structural engineering routing
+    # ==========================================
+    # MODE B: MANUAL ENGINEERING PLACEMENT
+    # ==========================================
     else:
-        st.write("Input custom coordinate nodes to run simulated coverage footprints.")
+        st.write("Input structural metric coordinates below to deploy a simulated node trace.")
+        
         center_r, center_c = orig_h // 2, orig_w // 2
         def_lon, def_lat = rasterio.transform.xy(transform, center_r, center_c, offset="center")
         
         cx_lat, cx_lon = st.columns(2)
-        with cx_lat: target_lat = st.number_input("Target Node Latitude:", value=float(def_lat), format="%.6f")
-        with cx_lon: target_lon = st.number_input("Target Node Longitude:", value=float(def_lon), format="%.6f")
+        with cx_lat: target_lat_m = st.number_input("Target Northing Metric Coordinate (m):", value=float(def_lat), format="%.2f")
+        with cx_lon: target_lon_m = st.number_input("Target Easting Metric Coordinate (m):", value=float(def_lon), format="%.2f")
         
-        target_r, target_c = rasterio.transform.rowcol(transform, target_lon, target_lat)
+        target_r, target_c = rasterio.transform.rowcol(transform, target_lon_m, target_lat_m)
         
         if (0 <= target_r < orig_h) and (0 <= target_c < orig_w):
+            # Translate specific target inputs to WGS84 for Pydeck positioning
+            gl_lons, gl_lats = warp_transform(meta['crs'], 'EPSG:4326', [target_lon_m], [target_lat_m])
+            m_lon, m_lat = gl_lons[0], gl_lats[0]
+            
             manual_rsrp, manual_sinr = simulate_local_physics(target_r, target_c, (orig_h, orig_w), pixel_m, coverage_rad_m)
             
             disc_manual = ((yx[0] - target_r)**2 + (yx[1] - target_c)**2) <= coverage_rad_px**2
@@ -250,20 +279,20 @@ if cov_file and pop_file and elev_file:
             col_m1, col_m2 = st.columns([3, 2])
             with col_m1:
                 st.write("#### 🗺️ Live Target Site Signal Propagation Footprint")
-                df_manual_site = pd.DataFrame([{"lat": target_lat, "lon": target_lon, "radius": coverage_rad_m}])
+                df_manual_site = pd.DataFrame([{"lat": m_lat, "lon": m_lon, "radius": coverage_rad_m}])
                 
                 coverage_footprint_layer = pdk.Layer(
                     "ScatterplotLayer", df_manual_site, get_position="[lon, lat]", get_radius="radius",
-                    get_fill_color=[0, 255, 150, 60] if manual_rsrp > -90 else [255, 75, 75, 60], 
-                    get_line_color=[0, 200, 100, 200] if manual_rsrp > -90 else [255, 0, 0, 200],
+                    get_fill_color=[40, 220, 130, 65] if manual_rsrp > -85 else [230, 70, 70, 65], 
+                    get_line_color=[40, 200, 100, 200] if manual_rsrp > -85 else [210, 50, 50, 200],
                     line_width_min_pixels=2,
                 )
                 node_mast_layer = pdk.Layer(
-                    "ColumnLayer", df_manual_site, get_position="[lon, lat]", get_elevation=200, radius=25,
-                    get_fill_color=[0, 255, 120, 255] if manual_rsrp > -90 else [255, 200, 0, 255], extruded=True
+                    "ColumnLayer", df_manual_site, get_position="[lon, lat]", get_elevation=300, radius=30,
+                    get_fill_color=[40, 220, 130, 255] if manual_rsrp > -85 else [230, 180, 0, 255], extruded=True
                 )
                 
-                view_state_manual = pdk.ViewState(latitude=target_lat, longitude=target_lon, zoom=13, pitch=30)
+                view_state_manual = pdk.ViewState(latitude=m_lat, longitude=m_lon, zoom=13, pitch=30)
                 st.pydeck_chart(pdk.Deck(layers=[coverage_footprint_layer, node_mast_layer], initial_view_state=view_state_manual))
                 
             with col_m2:
@@ -277,6 +306,6 @@ if cov_file and pop_file and elev_file:
                 st.metric("Total Regional Area Coverage Gain", f"{manual_gain_pct:.3f} %")
                 st.metric("Inhabited Population Demand Satisfied", f"{manual_pop_gain:.3f} %")
         else:
-            st.error("❌ Out-of-Bounds Error: Coordinates fall outside current raster extents.")
+            st.error("❌ Out-of-Bounds Error: Specified target grid metrics lie outside the asset canvas matrix dimensions.")
 else:
     st.info("👈 Please upload all three foundational environment rasters in the main layout panel to initiate the site allocation search engine.")

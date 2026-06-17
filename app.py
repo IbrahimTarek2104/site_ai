@@ -1,3 +1,5 @@
+import os
+import urllib.request
 import streamlit as st
 import numpy as np
 import torch
@@ -10,7 +12,7 @@ from pipeline.network import AttentionUNet
 from pipeline.data_pipeline import ProductionInferencePipeline
 
 # ==========================================
-# Page Config & Core Layout Initialization
+# 1. Page Config & Initialization
 # ==========================================
 st.set_page_config(page_title="AI Site Planner", layout="wide", initial_sidebar_state="expanded")
 st.title("🛰️ Deep RL & Vision Cellular Site Network Planning Engine")
@@ -18,19 +20,48 @@ st.write("---")
 
 pipeline = ProductionInferencePipeline(patch_size=64)
 
+MODEL_PATH = "models/unet_best.pth"
+# 📋 MAKE SURE YOUR DROPBOX LINK IS HERE AND ENDS IN dl=1
+DROPBOX_URL = "https://www.dropbox.com/scl/fi/a8p2osunwyxxftnyip2fh/unet_best.pth?rlkey=459ce4ujuqc4b8qg8a3o1m0lo&st=cbkmwa2w&dl=1"
+
+@st.cache_resource
+def download_model_from_dropbox():
+    os.makedirs("models", exist_ok=True)
+    
+    # Clean up any tiny, corrupted text pointer files from old LFS attempts
+    if os.path.exists(MODEL_PATH) and os.path.getsize(MODEL_PATH) < 1000000:
+        os.remove(MODEL_PATH)
+        
+    if not os.path.exists(MODEL_PATH):
+        with st.spinner("📥 Streaming trained model weights securely from Dropbox..."):
+            try:
+                opener = urllib.request.build_opener()
+                opener.addheaders = [('User-agent', 'Mozilla/5.0')]
+                urllib.request.install_opener(opener)
+                urllib.request.urlretrieve(DROPBOX_URL, MODEL_PATH)
+            except Exception as e:
+                st.error(f"Failed to stream from Dropbox. Error: {e}")
+    return MODEL_PATH
+
+# Execute the download stream first
+download_model_from_dropbox()
+
 @st.cache_resource
 def load_model():
     model = AttentionUNet(in_channels=3, base=64, drop=0.2)
-    state_dict = torch.load("models/unet_best.pth", map_location=torch.device('cpu'))
+    # Safely load weights onto CPU with strict checks turned off
+    state_dict = torch.load(MODEL_PATH, map_location=torch.device('cpu'), weights_only=False)
     model.load_state_dict(state_dict, strict=False)
     model.eval()
     return model
 
+# 🛡️ HERE IS YOUR SAFEGUARD TRY BLOCK — LEAVE THIS EXACTLY AS IS:
 try:
     model = load_model()
     st.sidebar.success("✅ Attention U-Net Core Online")
 except Exception as e:
     st.sidebar.error(f"❌ Model weight load error: {e}")
+
 
 # ==========================================
 # Dynamic Interactive Sidebar Widgets

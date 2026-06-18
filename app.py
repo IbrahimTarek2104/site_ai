@@ -21,6 +21,7 @@ st.write("---")
 pipeline = ProductionInferencePipeline(patch_size=64)
 
 MODEL_PATH = "models/unet_best.pth"
+# 📋 PASTE YOUR COPIED DROPBOX LINK DIRECTLY HERE (ENSURE IT ENDS WITH dl=1)
 DROPBOX_URL = "https://www.dropbox.com/scl/fi/abc123xyz/unet_best.pth?rlkey=xyz123&dl=1"
 
 @st.cache_resource
@@ -80,7 +81,7 @@ if total_w > 0:
     w_prob, w_pop, w_sinr, w_elev = w_prob/total_w, w_pop/total_w, w_sinr/total_w, w_elev/total_w
 
 FIXED_ISD_M = 1500.0        
-TARGET_RADIUS_M = 1500.0     # 🚀 Hardlocked to exactly 1.5 KM as requested
+TARGET_RADIUS_M = 1500.0     
 
 # ==========================================
 # 3. Local RF Physics Propagation Engine
@@ -272,12 +273,18 @@ if cov_file and pop_file and elev_file:
     # ==========================================
     st.write("---")
     
-    # 15-Band High-Resolution Color Palette for the priority map
+    # Clean 15-Band High-Resolution Color Palette for the priority map
     HIGH_DENSITY_CMAP = [
         [0, 0, 30, 0], [30, 0, 100, 45], [0, 60, 200, 70], [0, 120, 255, 95],
         [0, 180, 220, 120], [0, 220, 150, 140], [0, 245, 80, 160], [100, 255, 0, 180],
         [190, 255, 0, 195], [255, 255, 0, 210], [255, 190, 0, 225], [255, 120, 0, 235],
         [255, 50, 0, 245], [220, 0, 40, 255], [160, 0, 80, 255]
+    ]
+    
+    # Solid Red Palette for the legacy covered areas
+    LEGACY_RED_CMAP = [
+        [230, 50, 50, 0], [230, 50, 50, 40], [230, 50, 50, 80], 
+        [230, 50, 50, 120], [230, 50, 50, 160], [230, 50, 50, 190]
     ]
     
     view_state = pdk.ViewState(
@@ -289,46 +296,44 @@ if cov_file and pop_file and elev_file:
     with col_left:
         st.markdown("#### 🌈 MAP 1: Composite AI Suitability Priority Landscape")
         
-        # Flat grid surface representing the composite priority scoring layers
-        layer_priority_grid = pdk.Layer(
-            "GridLayer",
+        layer_priority_heatmap = pdk.Layer(
+            "HeatmapLayer",
             df_heatmap,
             get_position="[lon, lat]",
             get_weight="weight",
-            cell_size=130,
-            extruded=False,
-            color_range=HIGH_DENSITY_CMAP,
-            color_scale_type='"linear"',
-            aggregation='"MAX"'
+            radius_pixels=30,          
+            intensity=2.5,
+            threshold=0.02,
+            aggregation='"MEAN"',
+            color_range=HIGH_DENSITY_CMAP
         )
-        st.pydeck_chart(pdk.Deck(layers=[layer_priority_grid], initial_view_state=view_state))
+        st.pydeck_chart(pdk.Deck(layers=[layer_priority_heatmap], initial_view_state=view_state))
         st.caption("Gradients isolate localized suitabilities combining U-Net inference and geographic layers.")
 
     with col_right:
         st.markdown("#### 📡 MAP 2: Allocation Matrix Deployment Blueprint")
         
-        # 🚀 Flat crisp red cells for previously covered base positions (No massive circles)
-        layer_legacy_flat = pdk.Layer(
-            "ScreenGridLayer",
+        layer_legacy_heatmap = pdk.Layer(
+            "HeatmapLayer",
             df_legacy,
             get_position="[lon, lat]",
-            cell_size_pixels=2.5,
-            color_range=[[0, 0, 0, 0], [230, 50, 50, 160]],
+            radius_pixels=25,
+            intensity=3.0,
+            threshold=0.05,
+            color_range=LEGACY_RED_CMAP,
             pickable=False
         )
         
-        # 🚀 Sharp, independent 1.5 KM green circles representing only new tower nodes
         layer_new_footprints = pdk.Layer(
             "ScatterplotLayer",
             df_candidates,
             get_position="[lon, lat]",
-            get_radius=TARGET_RADIUS_M,               # Exactly 1500 meters
-            get_fill_color=[40, 220, 100, 65],        # Clear green profile
+            get_radius=TARGET_RADIUS_M,               
+            get_fill_color=[40, 220, 100, 65],        
             get_line_color=[0, 170, 60, 200],
             line_width_min_pixels=2
         )
         
-        # Minimalist 3D node markers
         layer_tower_mast = pdk.Layer(
             "ColumnLayer",
             df_candidates,
@@ -341,7 +346,7 @@ if cov_file and pop_file and elev_file:
         )
         
         st.pydeck_chart(pdk.Deck(
-            layers=[layer_legacy_flat, layer_new_footprints, layer_tower_mast], 
+            layers=[layer_legacy_heatmap, layer_new_footprints, layer_tower_mast], 
             initial_view_state=view_state,
             tooltip={"text": "Rank: {rank}\nEst RSRP: {rsrp} dBm\nEst SINR: {sinr} dB"}
         ))

@@ -245,4 +245,125 @@ if cov_file and pop_file and elev_file:
         df_candidates = pd.DataFrame(candidates)
 
     # Extract coordinates for mapping
-    with st.spinner("Extracting map
+    with st.spinner("Extracting map visualization data layers..."):
+        step_stride = max(1, int(max(orig_h, orig_w) / 150))
+        baseline_coverage_map = features_stack[:, :, 0]
+        
+        legacy_cells = []
+        heatmap_data = []
+        
+        for r in range(0, orig_h, step_stride):
+            for c in range(0, orig_w, step_stride):
+                n_lon, n_lat = rasterio.transform.xy(transform, r, c, offset="center")
+                g_lons, g_lats = warp_transform(meta['crs'], 'EPSG:4326', [n_lon], [n_lat])
+                
+                if baseline_coverage_map[r, c] > 0.5:
+                    legacy_cells.append({"lon": g_lons[0], "lat": g_lats[0]})
+                
+                val = float(priority_base[r, c])
+                if val > 0.05:
+                    heatmap_data.append({"lon": g_lons[0], "lat": g_lats[0], "weight": val})
+                    
+        df_legacy = pd.DataFrame(legacy_cells)
+        df_heatmap = pd.DataFrame(heatmap_data)
+
+    # ==========================================
+    # 7. Clean Side-by-Side Spatial Visualization
+    # ==========================================
+    st.write("---")
+    
+    # 15-Band High-Resolution Color Palette for the priority map
+    HIGH_DENSITY_CMAP = [
+        [0, 0, 30, 0], [30, 0, 100, 45], [0, 60, 200, 70], [0, 120, 255, 95],
+        [0, 180, 220, 120], [0, 220, 150, 140], [0, 245, 80, 160], [100, 255, 0, 180],
+        [190, 255, 0, 195], [255, 255, 0, 210], [255, 190, 0, 225], [255, 120, 0, 235],
+        [255, 50, 0, 245], [220, 0, 40, 255], [160, 0, 80, 255]
+    ]
+    
+    view_state = pdk.ViewState(
+        latitude=df_candidates['lat'].mean(), longitude=df_candidates['lon'].mean(), zoom=11.6, pitch=0
+    )
+    
+    col_left, col_right = st.columns(2)
+    
+    with col_left:
+        st.markdown("#### 🌈 MAP 1: Composite AI Suitability Priority Landscape")
+        
+        # Flat grid surface representing the composite priority scoring layers
+        layer_priority_grid = pdk.Layer(
+            "GridLayer",
+            df_heatmap,
+            get_position="[lon, lat]",
+            get_weight="weight",
+            cell_size=130,
+            extruded=False,
+            color_range=HIGH_DENSITY_CMAP,
+            color_scale_type='"linear"',
+            aggregation='"MAX"'
+        )
+        st.pydeck_chart(pdk.Deck(layers=[layer_priority_grid], initial_view_state=view_state))
+        st.caption("Gradients isolate localized suitabilities combining U-Net inference and geographic layers.")
+
+    with col_right:
+        st.markdown("#### 📡 MAP 2: Allocation Matrix Deployment Blueprint")
+        
+        # 🚀 Flat crisp red cells for previously covered base positions (No massive circles)
+        layer_legacy_flat = pdk.Layer(
+            "ScreenGridLayer",
+            df_legacy,
+            get_position="[lon, lat]",
+            cell_size_pixels=2.5,
+            color_range=[[0, 0, 0, 0], [230, 50, 50, 160]],
+            pickable=False
+        )
+        
+        # 🚀 Sharp, independent 1.5 KM green circles representing only new tower nodes
+        layer_new_footprints = pdk.Layer(
+            "ScatterplotLayer",
+            df_candidates,
+            get_position="[lon, lat]",
+            get_radius=TARGET_RADIUS_M,               # Exactly 1500 meters
+            get_fill_color=[40, 220, 100, 65],        # Clear green profile
+            get_line_color=[0, 170, 60, 200],
+            line_width_min_pixels=2
+        )
+        
+        # Minimalist 3D node markers
+        layer_tower_mast = pdk.Layer(
+            "ColumnLayer",
+            df_candidates,
+            get_position="[lon, lat]",
+            get_elevation=350,
+            radius=60,
+            get_fill_color=[0, 240, 255, 255],
+            extruded=True,
+            pickable=True
+        )
+        
+        st.pydeck_chart(pdk.Deck(
+            layers=[layer_legacy_flat, layer_new_footprints, layer_tower_mast], 
+            initial_view_state=view_state,
+            tooltip={"text": "Rank: {rank}\nEst RSRP: {rsrp} dBm\nEst SINR: {sinr} dB"}
+        ))
+        
+        st.markdown(
+            """
+            <div style="display: flex; gap: 20px; font-size: 13px; margin-top: 5px; justify-content: center;">
+                <div>🔴 <span style="color:#e63232; font-weight:bold;">Already Covered</span></div>
+                <div>🟢 <span style="color:#28dc64; font-weight:bold;">New 1.5 KM Footprints</span></div>
+                <div>🔷 <span style="color:#00f0ff; font-weight:bold;">New Masts</span></div>
+            </div>
+            """, 
+            unsafe_allow_html=True
+        )
+
+    # Data Report
+    st.write("---")
+    st.write("#### 📈 Evolved Candidate Site Allocation Metrics")
+    st.dataframe(
+        df_candidates[["rank", "native_lat", "native_lon", "rsrp", "sinr"]].rename(
+            columns={"native_lat": "Northing (m)", "native_lon": "Easting (m)", "rsrp": "Est RSRP (dBm)", "sinr": "Est SINR (dB)"}
+        ), use_container_width=True, hide_index=True
+    )
+else:
+    st.info("👈 Please upload all three foundational environment rasters in the main layout panel to initiate the spatial allocation dashboard engine.")

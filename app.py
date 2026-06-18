@@ -222,21 +222,75 @@ if cov_file and pop_file and elev_file:
 
             df_candidates = pd.DataFrame(candidates)
         
+        # ========================================================
+        # 🗺️ VISUALIZATION MAP GENERATION: 3D TOWERS ON HEATMAP
+        # ========================================================
         col1, col2 = st.columns([3, 2])
         with col1:
-            st.write("#### 🗺️ Interactive 3D Allocation Blueprint (Color = Target RSRP Level)")
-            view_state = pdk.ViewState(latitude=df_candidates['lat'].mean(), longitude=df_candidates['lon'].mean(), zoom=13, pitch=45)
+            st.write("#### 🗺️ Interactive 3D Blueprint over AI Suitability Heatmap")
             
-            # Map cylinder render colors directly to real RF thresholds
+            # 1. Convert the entire dense prob_map matrix into flat coordinates for the heatmap layer
+            # To prevent performance lag on massive images, we downsample the background grid visualization slightly
+            step_stride = max(1, int(max(orig_h, orig_w) / 150)) 
+            
+            heatmap_data = []
+            for r in range(0, orig_h, step_stride):
+                for c in range(0, orig_w, step_stride):
+                    prob_val = float(prob_map[r, c])
+                    if prob_val > 0.1:  # Only map pixels with a meaningful suitability score
+                        # Translate current pixel to native meters, then to WGS84 degrees
+                        n_lon, n_lat = rasterio.transform.xy(transform, r, c, offset="center")
+                        g_lons, g_lats = warp_transform(meta['crs'], 'EPSG:4326', [n_lon], [n_lat])
+                        heatmap_data.append({
+                            "lon": g_lons[0],
+                            "lat": g_lats[0],
+                            "weight": prob_val
+                        })
+            
+            df_heatmap = pd.DataFrame(heatmap_data)
+            
+            # 2. Configure Pydeck view viewport
+            view_state = pdk.ViewState(
+                latitude=df_candidates['lat'].mean(), 
+                longitude=df_candidates['lon'].mean(), 
+                zoom=12.5, 
+                pitch=45
+            )
+            
+            # 3. Layer A: The Continuous AI Suitability Grid Layer (The Heatmap)
+            suitability_heatmap_layer = pdk.Layer(
+                "HeatmapLayer",
+                df_heatmap,
+                get_position="[lon, lat]",
+                get_weight="weight",
+                radius_pixels=30,
+                intensity=1.2,
+                threshold=0.05,
+                aggregation='"MEAN"'
+            )
+            
+            # 4. Layer B: The 3D Tower Masts
             df_candidates['color_r'] = np.where(df_candidates['rsrp'] > -85, 0, 240)
             df_candidates['color_g'] = np.where(df_candidates['rsrp'] > -85, 230, 80)
             
             tower_layer = pdk.Layer(
-                "ColumnLayer", df_candidates, get_position="[lon, lat]",
-                get_elevation=250, radius=45, get_fill_color="[color_r, color_g, 100, 230]", 
-                pickable=True, extruded=True
+                "ColumnLayer", 
+                df_candidates, 
+                get_position="[lon, lat]",
+                get_elevation=250, 
+                radius=45, 
+                get_fill_color="[color_r, color_g, 100, 240]", 
+                pickable=True, 
+                extruded=True
             )
-            st.pydeck_chart(pdk.Deck(layers=[tower_layer], initial_view_state=view_state, tooltip={"text": "Rank: {rank}\nEst RSRP: {rsrp} dBm\nEst SINR: {sinr} dB"}))
+            
+            # 5. Render the multi-layer map canvas
+            st.pydeck_chart(pdk.Deck(
+                layers=[suitability_heatmap_layer, tower_layer], 
+                initial_view_state=view_state, 
+                tooltip={"text": "Rank: {rank}\nEst RSRP: {rsrp} dBm\nEst SINR: {sinr} dB"}
+            ))
+            
         with col2:
             st.write("#### 📈 Ranked Candidate Site Metrics")
             st.dataframe(

@@ -256,7 +256,14 @@ if cov_file and pop_file and elev_file:
                 zoom=12.5, 
                 pitch=45
             )
-            
+            HIGH_CONTRAST_CMAP = [
+                [0, 20, 50, 0],       # 0% - Totally Transparent Dark Base
+                [0, 100, 240, 70],    # 20% - Cool Electric Blue (Low Suitability)
+                [130, 0, 255, 130],   # 40% - Deep Purple (Moderate)
+                [255, 0, 130, 180],   # 60% - Vibrant Magenta (High)
+                [255, 80, 0, 220],    # 80% - Neon Orange (Very High)
+                [255, 255, 0, 255]    # 100% - Laser Yellow (Peak Hotspots)
+            ]
             # 3. Layer A: The Continuous AI Suitability Grid Layer (The Heatmap)
             suitability_heatmap_layer = pdk.Layer(
                 "HeatmapLayer",
@@ -266,8 +273,10 @@ if cov_file and pop_file and elev_file:
                 radius_pixels=30,
                 intensity=1.2,
                 threshold=0.05,
-                aggregation='"MEAN"'
-            )
+                aggregation='"MEAN"',
+                color_range=HIGH_CONTRAST_CMAP,
+                color_domain=[0.01, 0.8])
+            
             
             # 4. Layer B: The 3D Tower Masts
             df_candidates['color_r'] = np.where(df_candidates['rsrp'] > -85, 0, 240)

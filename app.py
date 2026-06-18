@@ -15,13 +15,12 @@ from pipeline.data_pipeline import ProductionInferencePipeline
 # 1. Page Configuration & Base Setup
 # ==========================================
 st.set_page_config(page_title="AI Site Planner", layout="wide", initial_sidebar_state="expanded")
-st.title("🛰️ Unified Evolutionary AI Cellular Site Network Planning Dashboard")
+st.title("🛰️ Geospatial Cellular Site Planning Dashboard")
 st.write("---")
 
 pipeline = ProductionInferencePipeline(patch_size=64)
 
 MODEL_PATH = "models/unet_best.pth"
-# 📋 PASTE YOUR COPIED DROPBOX LINK DIRECTLY HERE (ENSURE IT ENDS WITH dl=1)
 DROPBOX_URL = "https://www.dropbox.com/scl/fi/abc123xyz/unet_best.pth?rlkey=xyz123&dl=1"
 
 @st.cache_resource
@@ -81,7 +80,7 @@ if total_w > 0:
     w_prob, w_pop, w_sinr, w_elev = w_prob/total_w, w_pop/total_w, w_sinr/total_w, w_elev/total_w
 
 FIXED_ISD_M = 1500.0        
-FIXED_RADIUS_M = 2000.0     
+TARGET_RADIUS_M = 1500.0     # 🚀 Hardlocked to exactly 1.5 KM as requested
 
 # ==========================================
 # 3. Local RF Physics Propagation Engine
@@ -95,7 +94,7 @@ def simulate_local_physics(r, c, shape, pixel_m):
     simulated_rsrp = -50.0 - (44.9 - 6.55 * np.log10(30.0)) * np.log10(np.maximum(dist_m/1000.0, 0.001))
     simulated_rsrp = np.clip(simulated_rsrp, -130.0, -44.0)
     
-    simulated_sinr = simulated_rsrp - (-95.0) - (dist_m / FIXED_RADIUS_M) * 12.0
+    simulated_sinr = simulated_rsrp - (-95.0) - (dist_m / TARGET_RADIUS_M) * 12.0
     return float(simulated_rsrp[r, c]), float(simulated_sinr[r, c])
 
 # ==========================================
@@ -245,141 +244,5 @@ if cov_file and pop_file and elev_file:
             })
         df_candidates = pd.DataFrame(candidates)
 
-    # Extract clean 2D coordinates for legacy coverage layers
-    with st.spinner("Extracting legacy network layout positions..."):
-        step_stride = max(1, int(max(orig_h, orig_w) / 140))
-        baseline_coverage_map = features_stack[:, :, 0]
-        
-        legacy_cells = []
-        heatmap_data = []
-        
-        for r in range(0, orig_h, step_stride):
-            for c in range(0, orig_w, step_stride):
-                n_lon, n_lat = rasterio.transform.xy(transform, r, c, offset="center")
-                g_lons, g_lats = warp_transform(meta['crs'], 'EPSG:4326', [n_lon], [n_lat])
-                
-                # 1. Store existing coverage pixels
-                if baseline_coverage_map[r, c] > 0.5:
-                    legacy_cells.append({"lon": g_lons[0], "lat": g_lats[0]})
-                
-                # 2. Store priority scoring values
-                val = float(priority_base[r, c])
-                if val > 0.05:
-                    heatmap_data.append({
-                        "lon": g_lons[0], "lat": g_lats[0],
-                        "weight": val
-                    })
-                    
-        df_legacy = pd.DataFrame(legacy_cells)
-        df_heatmap = pd.DataFrame(heatmap_data)
-
-    # ==========================================
-    # 7. Unified Multi-Layer Blueprint Map
-    # ==========================================
-    st.write("---")
-    
-    col_map, col_metrics = st.columns([3, 2])
-    
-    with col_map:
-        st.write("### 🗺️ Unified AI Structural Blueprint Layer Model")
-        
-        # Define 15-Band High-Resolution Color Palette
-        HIGH_DENSITY_CMAP = [
-            [0, 0, 30, 0],          # Baseline
-            [30, 0, 100, 45],       # Violet
-            [0, 60, 200, 70],       # Cobalt Blue
-            [0, 120, 255, 95],      # Sky Blue
-            [0, 180, 220, 120],     # Cyan
-            [0, 220, 150, 140],     # Teal
-            [0, 245, 80, 160],      # Emerald
-            [100, 255, 0, 180],     # Lime Green
-            [190, 255, 0, 195],     # Yellow-Green
-            [255, 255, 0, 210],     # Pure Yellow
-            [255, 190, 0, 225],     # Amber
-            [255, 120, 0, 235],     # Tangerine
-            [255, 50, 0, 245],      # Vermilion
-            [220, 0, 40, 255],      # Crimson Red
-            [160, 0, 80, 255]       # Peak Ruby
-        ]
-        
-        view_state = pdk.ViewState(
-            latitude=df_candidates['lat'].mean(), longitude=df_candidates['lon'].mean(), zoom=11.8, pitch=40
-        )
-        
-        # LAYER A: Previous Baseline Coverage (Flat Red Mask)
-        layer_legacy_mask = pdk.Layer(
-            "ScreenGridLayer",
-            df_legacy,
-            get_position="[lon, lat]",
-            cell_size_pixels=2.5,
-            color_range=[[0, 0, 0, 0], [240, 50, 50, 130]],
-            pickable=False
-        )
-        
-        # LAYER B: Dynamic Composite Suitability Heatmap Grid
-        layer_priority_heatmap = pdk.Layer(
-            "GridLayer",
-            df_heatmap,
-            get_position="[lon, lat]",
-            get_weight="weight",
-            cell_size=130,
-            extruded=False,
-            color_range=HIGH_DENSITY_CMAP,
-            color_scale_type='"linear"',
-            aggregation='"MAX"',
-            opacity=0.65
-        )
-        
-        # LAYER C: New Genetically Evolved Coverage Footprints (Translucent Green)
-        layer_new_footprints = pdk.Layer(
-            "ScatterplotLayer",
-            df_candidates,
-            get_position="[lon, lat]",
-            get_radius=FIXED_RADIUS_M,
-            get_fill_color=[40, 240, 100, 45],
-            get_line_color=[0, 180, 60, 160],
-            line_width_min_pixels=1.5
-        )
-        
-        # LAYER D: Hardware Target Deployments (Cyan 3D Pillars)
-        layer_3d_towers = pdk.Layer(
-            "ColumnLayer",
-            df_candidates,
-            get_position="[lon, lat]",
-            get_elevation=450,
-            radius=55,
-            get_fill_color=[0, 240, 255, 255],
-            extruded=True,
-            pickable=True
-        )
-        
-        # Render Unified Map
-        st.pydeck_chart(pdk.Deck(
-            layers=[layer_legacy_mask, layer_priority_heatmap, layer_new_footprints, layer_3d_towers],
-            initial_view_state=view_state,
-            tooltip={"text": "Rank: {rank}\nEst RSRP: {rsrp} dBm\nEst SINR: {sinr} dB"}
-        ))
-        
-        # Map Legend Callouts
-        st.markdown(
-            """
-            <div style="display: flex; gap: 15px; font-size: 13px; margin-top: 5px;">
-                <div>🔴 <span style="color:#f03232; font-weight:bold;">Legacy Coverage</span> (Baseline Grid)</div>
-                <div>🌈 <span style="font-weight:bold;">AI Suitability Map</span> (Spectral Heat Gradients)</div>
-                <div>🟢 <span style="color:#28f064; font-weight:bold;">New Footprints</span> (2km Genetically Evolved Discs)</div>
-                <div>🔷 <span style="color:#00f0ff; font-weight:bold;">Hardware Masts</span> (3D Cyan Tower Columns)</div>
-            </div>
-            """, 
-            unsafe_allow_html=True
-        )
-
-    with col_metrics:
-        st.write("### 📈 Evolved Candidate Site Allocation Metrics")
-        st.dataframe(
-            df_candidates[["rank", "native_lat", "native_lon", "rsrp", "sinr"]].rename(
-                columns={"native_lat": "Northing (m)", "native_lon": "Easting (m)", "rsrp": "Est RSRP (dBm)", "sinr": "Est SINR (dB)"}
-            ), use_container_width=True, hide_index=True
-        )
-        st.metric("Total Genetic Allocations", f"{len(df_candidates)} Active Sites")
-else:
-    st.info("👈 Please upload all three foundational environment rasters in the main layout panel to initiate the unified dashboard map engine.")
+    # Extract coordinates for mapping
+    with st.spinner("Extracting map

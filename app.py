@@ -8,15 +8,14 @@ from rasterio.warp import transform as warp_transform
 from scipy.ndimage import distance_transform_edt, gaussian_filter
 import pandas as pd
 import pydeck as pdk
-
 from pipeline.network import AttentionUNet
 from pipeline.data_pipeline import ProductionInferencePipeline
 
 # ==========================================
-# 1. Page Config & Core Layout Setup
+# 1. Page Configuration & Base Setup
 # ==========================================
 st.set_page_config(page_title="AI Site Planner", layout="wide", initial_sidebar_state="expanded")
-st.title("🛰️ Deep RL & Vision Cellular Site Network Planning Engine")
+st.title("🛰️ Evolutionary Geospatial Cellular Site Network Planning Engine")
 st.write("---")
 
 pipeline = ProductionInferencePipeline(patch_size=64)
@@ -28,11 +27,8 @@ DROPBOX_URL = "https://www.dropbox.com/scl/fi/abc123xyz/unet_best.pth?rlkey=xyz1
 @st.cache_resource
 def download_model_from_dropbox():
     os.makedirs("models", exist_ok=True)
-    
-    # Force flush any cached LFS metadata text pointers under 1MB
     if os.path.exists(MODEL_PATH) and os.path.getsize(MODEL_PATH) < 1000000:
         os.remove(MODEL_PATH)
-        
     if not os.path.exists(MODEL_PATH):
         with st.spinner("📥 Streaming trained model weights securely from Dropbox..."):
             try:
@@ -44,7 +40,6 @@ def download_model_from_dropbox():
                 st.error(f"Failed to stream from Dropbox. Error: {e}")
     return MODEL_PATH
 
-# Run download first
 download_model_from_dropbox()
 
 @st.cache_resource
@@ -62,53 +57,115 @@ except Exception as e:
     st.sidebar.error(f"❌ Model weight load error: {e}")
 
 # ==========================================
-# 2. Interactive Sidebar Sliders
+# 2. Simplified Sidebar Controls
 # ==========================================
-st.sidebar.header("🎛️ Optimization Parameters")
-isd_min_m = st.sidebar.slider("Minimum Inter-Site Distance (meters)", 500, 3000, 1500, 250)
-coverage_rad_m = st.sidebar.slider("Idealized Tower Coverage Radius (meters)", 500, 4500, 2250, 250)
-
-allocation_mode = st.sidebar.radio(
-    "Tower Placement Strategy Mode:",
-    ["Automated Greedy Search Optimization", "Manual Engineering Coordinate Placement Mode"]
-)
-
-if allocation_mode == "Automated Greedy Search Optimization":
-    num_candidates = st.sidebar.slider("Number of Sites to Allocate Automatically", 5, 50, 15, 5)
-    diversity_weight = st.sidebar.slider("Spatial Diversity Bias (Exploration)", 0.0, 0.5, 0.15, 0.05)
+st.sidebar.header("🧬 Optimization Settings")
+num_candidates = st.sidebar.slider("Number of Sites to Allocate", 5, 50, 10, 5)
 
 st.sidebar.write("---")
-st.sidebar.header("📊 Priority Weights")
-w_prob = st.sidebar.slider("Model Confidence Weight", 0.0, 1.0, 0.40, 0.05)
-w_pop = st.sidebar.slider("Population Demand Weight", 0.0, 1.0, 0.30, 0.05)
-w_sinr = st.sidebar.slider("Interference Mitigation Weight", 0.0, 1.0, 0.20, 0.05)
-w_elev = st.sidebar.slider("Terrain Disadvantage Weight", 0.0, 1.0, 0.10, 0.05)
+st.sidebar.markdown("🔬 **Genetic Algorithm Fine-Tuning**")
+ga_pop_size = st.sidebar.slider("Population Size (Chromosomes)", 20, 100, 40, 10)
+ga_generations = st.sidebar.slider("Evolution Generations", 10, 100, 30, 5)
+ga_mutation_rate = st.sidebar.slider("Mutation Probability", 0.01, 0.30, 0.15, 0.05)
 
+st.sidebar.write("---")
+st.sidebar.header("📊 Multi-Tier Priority Weights")
+w_prob = st.sidebar.slider("Model Confidence Weight (U-Net)", 0.0, 1.0, 0.35, 0.05)
+w_pop = st.sidebar.slider("Population Demand Weight", 0.0, 1.0, 0.30, 0.05)
+w_sinr = st.sidebar.slider("Baseline Service Gap Weight", 0.0, 1.0, 0.20, 0.05)
+w_elev = st.sidebar.slider("Terrain Topography Weight", 0.0, 1.0, 0.15, 0.05)
+
+# Enforce normalization of priority weights
 total_w = w_prob + w_pop + w_sinr + w_elev
 if total_w > 0:
     w_prob, w_pop, w_sinr, w_elev = w_prob/total_w, w_pop/total_w, w_sinr/total_w, w_elev/total_w
 
+FIXED_ISD_M = 1500.0        
+FIXED_RADIUS_M = 2000.0     
+
 # ==========================================
 # 3. Local RF Physics Propagation Engine
 # ==========================================
-def simulate_local_physics(r, c, shape, pixel_m, radius_m):
+def simulate_local_physics(r, c, shape, pixel_m):
     h, w = shape
     yx = np.indices((h, w))
-    
-    dist_px = np.sqrt((yx[0] - r)**2 + (yx[1] - c)**2)
-    dist_m = dist_px * pixel_m
+    dist_m = np.sqrt((yx[0] - r)**2 + (yx[1] - c)**2) * pixel_m
     dist_m = np.maximum(dist_m, pixel_m) 
     
     simulated_rsrp = -50.0 - (44.9 - 6.55 * np.log10(30.0)) * np.log10(np.maximum(dist_m/1000.0, 0.001))
     simulated_rsrp = np.clip(simulated_rsrp, -130.0, -44.0)
     
-    simulated_sinr = simulated_rsrp - (-95.0) - (dist_m / radius_m) * 12.0
-    simulated_sinr = np.clip(simulated_sinr, -8.0, 28.0)
-    
+    simulated_sinr = simulated_rsrp - (-95.0) - (dist_m / FIXED_RADIUS_M) * 12.0
     return float(simulated_rsrp[r, c]), float(simulated_sinr[r, c])
 
 # ==========================================
-# 4. Raster Ingestion Data Loop
+# 4. Core Genetic Algorithm Optimization Tier
+# ==========================================
+class CellularGeneticOptimizer:
+    def __init__(self, priority_surface, num_towers, pad_distance_px, pop_size=40, mutation_rate=0.15):
+        self.surface = priority_surface
+        self.num_towers = num_towers
+        self.pad_px = pad_distance_px
+        self.pop_size = pop_size
+        self.mutation_rate = mutation_rate
+        self.height, self.width = priority_surface.shape
+
+    def _generate_valid_chromosome(self):
+        coords = []
+        while len(coords) < self.num_towers:
+            r = np.random.randint(self.pad_px, self.height - self.pad_px)
+            c = np.random.randint(self.pad_px, self.width - self.pad_px)
+            coords.append([r, c])
+        return np.array(coords)
+
+    def calculate_fitness(self, chromosome):
+        score = 0.0
+        for r, c in chromosome:
+            score += self.surface[int(r), int(c)]
+        
+        for i in range(len(chromosome)):
+            for j in range(i + 1, len(chromosome)):
+                dist = np.linalg.norm(chromosome[i] - chromosome[j])
+                if dist < self.pad_px:
+                    score *= 0.70  
+        return max(0.001, float(score))
+
+    def evolve(self, generations=30):
+        population = [self._generate_valid_chromosome() for _ in range(self.pop_size)]
+        best_chromosome = None
+        best_fitness = -1.0
+
+        for gen in range(generations):
+            fitness_scores = np.array([self.calculate_fitness(chrom) for chrom in population])
+            
+            max_idx = np.argmax(fitness_scores)
+            if fitness_scores[max_idx] > best_fitness:
+                best_fitness = fitness_scores[max_idx]
+                best_chromosome = population[max_idx].copy()
+
+            prob_distribution = fitness_scores / fitness_scores.sum()
+            selected_indices = np.random.choice(self.pop_size, size=self.pop_size, p=prob_distribution)
+            population = [population[idx].copy() for idx in selected_indices]
+
+            next_generation = []
+            for i in range(0, self.pop_size, 2):
+                p1, p2 = population[i], population[min(i+1, self.pop_size-1)]
+                mask = np.random.rand(self.num_towers) > 0.5
+                c1 = np.where(mask[:, None], p1, p2)
+                c2 = np.where(~mask[:, None], p1, p2)
+                
+                for child in [c1, c2]:
+                    if np.random.rand() < self.mutation_rate:
+                        mutate_idx = np.random.randint(0, self.num_towers)
+                        child[mutate_idx, 0] = np.clip(child[mutate_idx, 0] + np.random.randint(-15, 16), self.pad_px, self.height - self.pad_px)
+                        child[mutate_idx, 1] = np.clip(child[mutate_idx, 1] + np.random.randint(-15, 16), self.pad_px, self.width - self.pad_px)
+                    next_generation.append(child)
+            population = next_generation[:self.pop_size]
+
+        return best_chromosome
+
+# ==========================================
+# 5. Data Ingestion & Inference Loop
 # ==========================================
 st.subheader("🌐 Step 1: Regional Environment Ingestion")
 cx1, cx2, cx3 = st.columns(3)
@@ -117,7 +174,7 @@ with cx2: pop_file = st.file_uploader("Upload Population Density (.tif)", type=[
 with cx3: elev_file = st.file_uploader("Upload Terrain Topography (.tif)", type=["tif", "tiff"])
 
 if cov_file and pop_file and elev_file:
-    with st.spinner("Processing rasters through clean production pipeline..."):
+    with st.spinner("Processing geospatial rasters and coregistering matrices..."):
         features_stack, meta = pipeline.extract_and_normalize(cov_file, pop_file, elev_file)
         transform = meta['transform']
         pixel_m = abs(transform.a)
@@ -125,10 +182,10 @@ if cov_file and pop_file and elev_file:
         patches, coords, meta_shapes = pipeline.generate_gaussian_patches(features_stack)
         orig_h, orig_w, pad_h, pad_w = meta_shapes
         
-    st.success(f"Geospatial arrays processed! Canvas: {orig_h}x{orig_w} pixels at {pixel_m:.1f}m/px native resolution.")
-    
-    # Sequential Patch-Space Inference
-    with st.spinner("Executing Attention U-Net Inference across patch space..."):
+    st.success(f"Geospatial arrays processed successfully! Active layout: {orig_h}x{orig_w} pixels at {pixel_m:.1f}m/px.")
+
+    # Neural Network Spatial Prediction Pipeline
+    with st.spinner("Executing Attention U-Net Inference across patch spaces..."):
         prob_acc = np.zeros((pad_h, pad_w), dtype=np.float64)
         wgt_acc = np.zeros((pad_h, pad_w), dtype=np.float64)
         
@@ -145,237 +202,113 @@ if cov_file and pop_file and elev_file:
             
         prob_map = np.where(wgt_acc > 0, prob_acc / wgt_acc, 0.0).astype(np.float32)
         prob_map = prob_map[0:orig_h, 0:orig_w]
-        pred_map = (prob_map >= 0.5).astype(np.uint8)
 
-    # Compile priority arrays
+    # Integrated Unified Priority Scoring Function
     pop_n = features_stack[:, :, 1]
     sinr_bad = 1.0 - features_stack[:, :, 0] 
     elev_bad = 1.0 - features_stack[:, :, 2]
     
+    # 🚀 RE-INTEGRATED CORE FORMULA: Uses both spatial filters and neural network predictions
     priority_raw = (w_prob * prob_map) + (w_pop * pop_n) + (w_sinr * sinr_bad) + (w_elev * elev_bad)
     priority_compressed = np.power(np.clip(priority_raw, 0, 1), 0.6)
     priority_base = gaussian_filter(priority_compressed, sigma=5).astype(np.float32)
     priority_base = (priority_base - priority_base.min()) / (priority_base.max() - priority_base.min() + 1e-8)
-    
-    yx = np.indices((orig_h, orig_w))
-    coverage_rad_px = max(15, int(coverage_rad_m / pixel_m))
 
+    # ==========================================
+    # 6. Execute Genetic Optimization
+    # ==========================================
     st.write("---")
-    st.subheader(f"🎯 Step 2: Optimization Engine Output — ({allocation_mode})")
+    st.subheader("🧬 Step 2: Genetic Layout Evolution Engine")
+    
+    with st.spinner("Initializing population chromosomes and calculating evolutionary fitness..."):
+        min_dist_px = max(5, int(FIXED_ISD_M / pixel_m))
+        
+        ga_engine = CellularGeneticOptimizer(
+            priority_surface=priority_base, num_towers=num_candidates,
+            pad_distance_px=min_dist_px, pop_size=ga_pop_size, mutation_rate=ga_mutation_rate
+        )
+        
+        optimal_layout = ga_engine.evolve(generations=ga_generations)
+        
+        # Build candidate coordinates dataset
+        candidates = []
+        for step, (r, c) in enumerate(optimal_layout):
+            native_lon, native_lat = rasterio.transform.xy(transform, r, c, offset="center")
+            longitudes, latitudes = warp_transform(meta['crs'], 'EPSG:4326', [native_lon], [native_lat])
+            site_rsrp, site_sinr = simulate_local_physics(r, c, (orig_h, orig_w), pixel_m)
+            
+            candidates.append({
+                "rank": step+1, "lat": latitudes[0], "lon": longitudes[0],
+                "native_lat": round(native_lat, 1), "native_lon": round(native_lon, 1),
+                "rsrp": round(site_rsrp, 1), "sinr": round(site_sinr, 1)
+            })
+        df_candidates = pd.DataFrame(candidates)
+
+    # Extract coordinates from baseline coverage file for mapping
+    with st.spinner("Extracting legacy network layout positions..."):
+        step_stride = max(1, int(max(orig_h, orig_w) / 120))
+        baseline_coverage_map = features_stack[:, :, 0]
+        
+        legacy_cells = []
+        for r in range(0, orig_h, step_stride):
+            for c in range(0, orig_w, step_stride):
+                if baseline_coverage_map[r, c] > 0.5:
+                    n_lon, n_lat = rasterio.transform.xy(transform, r, c, offset="center")
+                    g_lons, g_lats = warp_transform(meta['crs'], 'EPSG:4326', [n_lon], [n_lat])
+                    legacy_cells.append({"lon": g_lons[0], "lat": g_lats[0]})
+        df_legacy = pd.DataFrame(legacy_cells)
 
     # ==========================================
-    # MODE A: AUTOMATED GREEDY SEARCH OPTIMIZATION
+    # 7. Side-by-Side Blueprint Visualization
     # ==========================================
-    if allocation_mode == "Automated Greedy Search Optimization":
-        with st.spinner("Running Greedy Spatial Search Optimizer..."):
-            tower_radius_px = max(10, int(isd_min_m / pixel_m))
-            priority_work = priority_base.copy()
-            placed_mask = np.zeros((orig_h, orig_w), dtype=np.uint8)
-            candidates = []
-            
-            for step in range(num_candidates):
-                if len(candidates) > 0:
-                    placed_inv = 1 - placed_mask
-                    dist_to_placed = distance_transform_edt(placed_inv).astype(np.float32)
-                    dist_norm = dist_to_placed / (dist_to_placed.max() + 1e-8)
-                    priority_current = np.clip(priority_work + diversity_weight * dist_norm, 0, None)
-                else:
-                    priority_current = priority_work.copy()
-                    
-                idx = np.argmax(priority_current)
-                r, c = np.unravel_index(idx, priority_current.shape)
-                
-                if priority_current[r, c] < 0.05:
-                    break
-                    
-                native_lon, native_lat = rasterio.transform.xy(transform, r, c, offset="center")
-                longitudes, latitudes = warp_transform(meta['crs'], 'EPSG:4326', [native_lon], [native_lat])
-                global_lon, global_lat = longitudes[0], latitudes[0]
-                
-                site_rsrp, site_sinr = simulate_local_physics(r, c, (orig_h, orig_w), pixel_m, coverage_rad_m)
-                
-                disc = ((yx[0] - r)**2 + (yx[1] - c)**2) <= coverage_rad_px**2
-                newly_covered = disc & (pred_map == 1)
-                gain_pct = (newly_covered.sum() / (pred_map.sum() + 1e-8)) * 100.0
-                
-                candidates.append({
-                    "rank": step+1, 
-                    "lat": global_lat, 
-                    "lon": global_lon, 
-                    "native_lat": round(native_lat, 1),
-                    "native_lon": round(native_lon, 1),
-                    "gain_pct": round(gain_pct, 2),
-                    "rsrp": round(site_rsrp, 1), 
-                    "sinr": round(site_sinr, 1)
-                })
-                
-                placed_mask[r, c] = 1
-                priority_work[disc] = 0.0
+    st.write("---")
+    st.write("### 🗺️ Comparative Spatial Blueprint: Before vs After Genetic Adaptation")
+    
+    view_state = pdk.ViewState(
+        latitude=df_candidates['lat'].mean(), longitude=df_candidates['lon'].mean(), zoom=12.2, pitch=35
+    )
+    
+    col_before, col_after = st.columns(2)
+    
+    with col_before:
+        st.markdown("#### 🟥 BEFORE: Unoptimized Network & Coverage Gaps")
+        legacy_coverage_layer = pdk.Layer(
+            "ScatterplotLayer", df_legacy, get_position="[lon, lat]",
+            get_radius=FIXED_RADIUS_M, get_fill_color=[240, 50, 50, 40], pickable=False
+        )
+        st.pydeck_chart(pdk.Deck(layers=[legacy_coverage_layer], initial_view_state=view_state))
+        st.caption("Red regions represent existing baseline footprints. Wide dark zones show unserved network gaps.")
 
-            df_candidates = pd.DataFrame(candidates)
+    with col_after:
+        st.markdown("#### 🟩 AFTER: Optimized Genetic Tower Distribution")
+        bg_legacy_layer = pdk.Layer(
+            "ScatterplotLayer", df_legacy, get_position="[lon, lat]",
+            get_radius=FIXED_RADIUS_M, get_fill_color=[100, 100, 100, 25], pickable=False
+        )
+        new_coverage_footprint_layer = pdk.Layer(
+            "ScatterplotLayer", df_candidates, get_position="[lon, lat]",
+            get_radius=FIXED_RADIUS_M, get_fill_color=[40, 220, 120, 60],
+            get_line_color=[0, 180, 80, 200], line_width_min_pixels=1.5
+        )
+        new_tower_layer = pdk.Layer(
+            "ColumnLayer", df_candidates, get_position="[lon, lat]",
+            get_elevation=350, radius=50, get_fill_color=[0, 240, 255, 255], extruded=True, pickable=True
+        )
         
-        col1, col2 = st.columns([3, 2])
-        with col1:
-            st.write("#### 🗺️ Interactive 3D Blueprint over AI Suitability Heatmap")
-            
-            step_stride = max(1, int(max(orig_h, orig_w) / 150)) 
-            heatmap_data = []
-            
-            # 🚀 Step 1: Find local min/max of your original priority map to stretch the contrast
-            p_min = float(priority_base.min())
-            p_max = float(priority_base.max())
-            p_range = p_max - p_min if (p_max - p_min) > 1e-5 else 1.0
-            
-            for r in range(0, orig_h, step_stride):
-                for c in range(0, orig_w, step_stride):
-                    val = float(priority_base[r, c])
-                    
-                    if val > 0.05:
-                        # 🚀 Step 2: Dynamically normalize the original score cell-by-cell 
-                        # This turns subtle variations into a full 0.0 to 1.0 gradient!
-                        normalized_weight = (val - p_min) / p_range
-                        
-                        # Apply a minor contrast curve so the edges fade out smoothly
-                        display_weight = np.power(normalized_weight, 1.5)
-                        
-                        n_lon, n_lat = rasterio.transform.xy(transform, r, c, offset="center")
-                        g_lons, g_lats = warp_transform(meta['crs'], 'EPSG:4326', [n_lon], [n_lat])
-                        heatmap_data.append({
-                            "lon": g_lons[0],
-                            "lat": g_lats[0],
-                            "weight": float(display_weight)
-                        })
-            
-            df_heatmap = pd.DataFrame(heatmap_data)
-            df_heatmap = pd.DataFrame(heatmap_data)
-            
-            # 🎨 Professional 15-Band Spectral Color Mapping Profile
-            HIGH_DENSITY_CMAP = [
-                [0, 0, 30, 0],          # Transparent Baseline
-                [30, 0, 100, 35],       # Deep Violet
-                [0, 60, 200, 60],       # Cobalt Blue
-                [0, 120, 255, 85],      # Sky Blue
-                [0, 180, 220, 110],     # Cyan
-                [0, 220, 150, 130],     # Teal-Green
-                [0, 245, 80, 150],      # Emerald Green
-                [100, 255, 0, 170],     # Lime
-                [190, 255, 0, 190],     # Chartreuse
-                [255, 255, 0, 210],     # Neon Yellow
-                [255, 190, 0, 225],     # Amber Orange
-                [255, 120, 0, 240],     # Tangerine
-                [255, 50, 0, 250],      # Vermilion
-                [220, 0, 40, 255],      # Crimson Red
-                [160, 0, 80, 255]       # Peak Ruby Fuchsia
-            ]
-            
-            view_state = pdk.ViewState(
-                latitude=df_candidates['lat'].mean(), 
-                longitude=df_candidates['lon'].mean(), 
-                zoom=12.5, 
-                pitch=45
-            )
-            
-            suitability_heatmap_layer = pdk.Layer(
-                "HeatmapLayer",
-                df_heatmap,
-                get_position="[lon, lat]",
-                get_weight="weight",
-                radius_pixels=25,
-                intensity=3.0,
-                threshold=0.01,
-                aggregation='"MEAN"',
-                color_range=HIGH_DENSITY_CMAP,
-                color_domain=[0.02, 0.75]
-            )
-            
-            df_candidates['color_r'] = np.where(df_candidates['rsrp'] > -85, 0, 240)
-            df_candidates['color_g'] = np.where(df_candidates['rsrp'] > -85, 230, 80)
-            
-            tower_layer = pdk.Layer(
-                "ColumnLayer", 
-                df_candidates, 
-                get_position="[lon, lat]",
-                get_elevation=250, 
-                radius=45, 
-                get_fill_color="[color_r, color_g, 100, 240]", 
-                pickable=True, 
-                extruded=True
-            )
-            
-            st.pydeck_chart(pdk.Deck(
-                layers=[suitability_heatmap_layer, tower_layer], 
-                initial_view_state=view_state, 
-                tooltip={"text": "Rank: {rank}\nEst RSRP: {rsrp} dBm\nEst SINR: {sinr} dB"}
-            ))
-            
-        with col2:
-            st.write("#### 📈 Ranked Candidate Site Metrics")
-            st.dataframe(
-                df_candidates[["rank", "native_lat", "native_lon", "gain_pct", "rsrp", "sinr"]].rename(
-                    columns={"native_lat": "Northing (m)", "native_lon": "Easting (m)", "gain_pct": "Area Gain %", "rsrp": "RSRP (dBm)", "sinr": "SINR (dB)"}
-                ), use_container_width=True, hide_index=True
-            )
-            st.metric("Total Automated Allocations", f"{len(df_candidates)} Sites")
+        st.pydeck_chart(pdk.Deck(
+            layers=[bg_legacy_layer, new_coverage_footprint_layer, new_tower_layer], 
+            initial_view_state=view_state,
+            tooltip={"text": "Rank: {rank}\nEst RSRP: {rsrp} dBm\nEst SINR: {sinr} dB"}
+        ))
+        st.caption("Cyan columns represent new towers. Green translucent circles track the newly optimized coverage profiles.")
 
-    # ==========================================
-    # MODE B: MANUAL ENGINEERING PLACEMENT
-    # ==========================================
-    else:
-        st.write("Input structural metric coordinates below to deploy a simulated node trace.")
-        
-        center_r, center_c = orig_h // 2, orig_w // 2
-        def_lon, def_lat = rasterio.transform.xy(transform, center_r, center_c, offset="center")
-        
-        cx_lat, cx_lon = st.columns(2)
-        with cx_lat: target_lat_m = st.number_input("Target Northing Metric Coordinate (m):", value=float(def_lat), format="%.2f")
-        with cx_lon: target_lon_m = st.number_input("Target Easting Metric Coordinate (m):", value=float(def_lon), format="%.2f")
-        
-        target_r, target_c = rasterio.transform.rowcol(transform, target_lon_m, target_lat_m)
-        
-        if (0 <= target_r < orig_h) and (0 <= target_c < orig_w):
-            gl_lons, gl_lats = warp_transform(meta['crs'], 'EPSG:4326', [target_lon_m], [target_lat_m])
-            m_lon, m_lat = gl_lons[0], gl_lats[0]
-            
-            manual_rsrp, manual_sinr = simulate_local_physics(target_r, target_c, (orig_h, orig_w), pixel_m, coverage_rad_m)
-            
-            disc_manual = ((yx[0] - target_r)**2 + (yx[1] - target_c)**2) <= coverage_rad_px**2
-            newly_covered_manual = disc_manual & (pred_map == 1)
-            manual_gain_pct = (newly_covered_manual.sum() / (pred_map.sum() + 1e-8)) * 100.0
-            
-            pop_newly = (pop_n * newly_covered_manual).sum()
-            pop_total = (pop_n * pred_map).sum()
-            manual_pop_gain = (pop_newly / (pop_total + 1e-8)) * 100.0
-            
-            col_m1, col_m2 = st.columns([3, 2])
-            with col_m1:
-                st.write("#### 🗺️ Live Target Site Signal Propagation Footprint")
-                df_manual_site = pd.DataFrame([{"lat": m_lat, "lon": m_lon, "radius": coverage_rad_m}])
-                
-                coverage_footprint_layer = pdk.Layer(
-                    "ScatterplotLayer", df_manual_site, get_position="[lon, lat]", get_radius="radius",
-                    get_fill_color=[40, 220, 130, 65] if manual_rsrp > -85 else [230, 70, 70, 65], 
-                    get_line_color=[40, 200, 100, 200] if manual_rsrp > -85 else [210, 50, 50, 200],
-                    line_width_min_pixels=2,
-                )
-                node_mast_layer = pdk.Layer(
-                    "ColumnLayer", df_manual_site, get_position="[lon, lat]", get_elevation=300, radius=30,
-                    get_fill_color=[40, 220, 130, 255] if manual_rsrp > -85 else [230, 180, 0, 255], extruded=True
-                )
-                
-                view_state_manual = pdk.ViewState(latitude=m_lat, longitude=m_lon, zoom=13, pitch=30)
-                st.pydeck_chart(pdk.Deck(layers=[coverage_footprint_layer, node_mast_layer], initial_view_state=view_state_manual))
-                
-            with col_m2:
-                st.write("#### 📊 Real-Time Simulation Telemetry Physics")
-                pm1, pm2 = st.columns(2)
-                with pm1: st.metric("Simulated Node RSRP", f"{manual_rsrp:.1f} dBm", delta="Excellent" if manual_rsrp > -85 else "Marginal")
-                with pm2: st.metric("Simulated Node SINR", f"{manual_sinr:.1f} dB", delta="High Throughput" if manual_sinr > 12 else "Interference")
-                
-                st.write("---")
-                st.write("#### 📈 Regional Performance Gains")
-                st.metric("Total Regional Area Coverage Gain", f"{manual_gain_pct:.3f} %")
-                st.metric("Inhabited Population Demand Satisfied", f"{manual_pop_gain:.3f} %")
-        else:
-            st.error("❌ Out-of-Bounds Error: Specified target grid metrics lie outside the asset canvas matrix dimensions.")
+    # Data Report
+    st.write("---")
+    st.write("#### 📈 Evolved Candidate Site Allocation Metrics")
+    st.dataframe(
+        df_candidates[["rank", "native_lat", "native_lon", "rsrp", "sinr"]].rename(
+            columns={"native_lat": "Northing (m)", "native_lon": "Easting (m)", "rsrp": "Est RSRP (dBm)", "sinr": "Est SINR (dB)"}
+        ), use_container_width=True, hide_index=True
+    )
 else:
-    st.info("👈 Please upload all three foundational environment rasters in the main layout panel to initiate the site allocation search engine.")
+    st.info("👈 Please upload all three foundational environment rasters in the main layout panel to initiate the spatial allocation engine.")

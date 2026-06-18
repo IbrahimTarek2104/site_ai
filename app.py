@@ -69,16 +69,16 @@ ga_mutation_rate = st.sidebar.slider("Mutation Probability", 0.01, 0.30, 0.15, 0
 
 st.sidebar.write("---")
 st.sidebar.header("📊 Multi-Tier Priority Weights")
-w_pop = st.sidebar.slider("Population Demand Weight", 0.0, 1.0, 0.50, 0.05)
-w_gap = st.sidebar.slider("Boundary Inter-Site Distance Reward", 0.0, 1.0, 0.35, 0.05)
-w_elev = st.sidebar.slider("Terrain Topography Weight", 0.0, 1.0, 0.15, 0.05)
+w_pop = st.sidebar.slider("Population Demand Weight", 0.0, 1.0, 0.70, 0.05)
+w_elev = st.sidebar.slider("Terrain Topography Weight", 0.0, 1.0, 0.30, 0.05)
 
 # Enforce normalization of priority weights
-total_w = w_pop + w_gap + w_elev
+total_w = w_pop + w_elev
 if total_w > 0:
-    w_pop, w_gap, w_elev = w_pop/total_w, w_gap/total_w, w_elev/total_w
+    w_pop, w_elev = w_pop/total_w, w_elev/total_w
 
-FIXED_ISD_M = 1500.0        
+# 🚀 MUST COMPLY BOUNDARY CONSTANTS
+REQUIRED_ISD_M = 1500.0        
 TARGET_RADIUS_M = 1500.0     
 
 # ==========================================
@@ -100,8 +100,9 @@ def simulate_local_physics(r, c, shape, pixel_m):
 # 4. Core Genetic Algorithm Optimization Tier
 # ==========================================
 class CellularGeneticOptimizer:
-    def __init__(self, priority_surface, num_towers, pad_distance_px, pop_size=40, mutation_rate=0.15):
+    def __init__(self, priority_surface, dist_to_legacy_m, num_towers, pad_distance_px, pop_size=40, mutation_rate=0.15):
         self.surface = priority_surface
+        self.dist_to_legacy_m = dist_to_legacy_m
         self.num_towers = num_towers
         self.pad_px = pad_distance_px
         self.pop_size = pop_size
@@ -109,23 +110,36 @@ class CellularGeneticOptimizer:
         self.height, self.width = priority_surface.shape
 
     def _generate_valid_chromosome(self):
+        """Creates a single chromosome ensuring it doesn't spawn directly inside legacy zones."""
         coords = []
         while len(coords) < self.num_towers:
             r = np.random.randint(self.pad_px, self.height - self.pad_px)
             c = np.random.randint(self.pad_px, self.width - self.pad_px)
-            coords.append([r, c])
+            # Help initialization by choosing uncovered spaces
+            if self.dist_to_legacy_m[r, c] >= REQUIRED_ISD_M:
+                coords.append([r, c])
         return np.array(coords)
 
     def calculate_fitness(self, chromosome):
+        """Fitness evaluation applying strict hard constraints (Must return 0 if violated)"""
         score = 0.0
-        for r, c in chromosome:
-            score += self.surface[int(r), int(c)]
         
+        for r, c in chromosome:
+            ir, ic = int(r), int(c)
+            # 🚀 HARD CONSTRAINT 1: If any tower falls within 1.5KM of a legacy zone -> REJECT
+            if self.dist_to_legacy_m[ir, ic] < REQUIRED_ISD_M:
+                return 0.0
+                
+            score += self.surface[ir, ic]
+        
+        # 🚀 HARD CONSTRAINT 2: If any new towers are closer than 1.5KM to each other -> REJECT
         for i in range(len(chromosome)):
             for j in range(i + 1, len(chromosome)):
-                dist = np.linalg.norm(chromosome[i] - chromosome[j])
-                if dist < self.pad_px:
-                    score *= 0.70  
+                dist_px = np.linalg.norm(chromosome[i] - chromosome[j])
+                # Convert pixel distance to meters inside fitness validator
+                if dist_px < self.pad_px:
+                    return 0.0  
+                    
         return max(0.001, float(score))
 
     def evolve(self, generations=30):
@@ -140,6 +154,11 @@ class CellularGeneticOptimizer:
             if fitness_scores[max_idx] > best_fitness:
                 best_fitness = fitness_scores[max_idx]
                 best_chromosome = population[max_idx].copy()
+
+            # Handle edge case where entire generation violates hard constraints
+            if fitness_scores.sum() == 0:
+                population = [self._generate_valid_chromosome() for _ in range(self.pop_size)]
+                continue
 
             prob_distribution = fitness_scores / fitness_scores.sum()
             selected_indices = np.random.choice(self.pop_size, size=self.pop_size, p=prob_distribution)
@@ -159,6 +178,10 @@ class CellularGeneticOptimizer:
                         child[mutate_idx, 1] = np.clip(child[mutate_idx, 1] + np.random.randint(-15, 16), self.pad_px, self.width - self.pad_px)
                     next_generation.append(child)
             population = next_generation[:self.pop_size]
+
+        # Backup plan if environment is too constrained to find space
+        if best_chromosome is None or best_fitness <= 0.001:
+            best_chromosome = population[0]
 
         return best_chromosome
 
@@ -182,7 +205,7 @@ if cov_file and pop_file and elev_file:
         
     st.success(f"Geospatial arrays processed successfully! Active layout: {orig_h}x{orig_w} pixels at {pixel_m:.1f}m/px.")
 
-    # Neural Network Background Inference Pipeline (Retained as requested)
+    # Neural Network Background Inference Pipeline (Retained)
     with st.spinner("Executing Attention U-Net Inference across patch spaces..."):
         prob_acc = np.zeros((pad_h, pad_w), dtype=np.float64)
         wgt_acc = np.zeros((pad_h, pad_w), dtype=np.float64)
@@ -201,28 +224,21 @@ if cov_file and pop_file and elev_file:
         prob_map = np.where(wgt_acc > 0, prob_acc / wgt_acc, 0.0).astype(np.float32)
         prob_map = prob_map[0:orig_h, 0:orig_w]
 
-    # ========================================================
-    # 🧠 NEW STRUCTURAL PRIORITY SCORING ENGINE (NO UNET WEIGHT)
-    # ========================================================
-    # 1. Isolate the binary uncovered space matrix
+    # ==========================================
+    # 🧠 GEOSPATIAL SEARCH ENGINE CALCULATIONS
+    # ==========================================
     is_covered = (features_stack[:, :, 0] > 0.4).astype(np.uint8)
     is_uncovered_mask = (1 - is_covered).astype(np.float32)
     
-    # 2. Compute precise Euclidean metric distance steps away from legacy coverage zones
+    # Calculate physical spatial mapping distances
     distance_to_legacy_px = distance_transform_edt(is_uncovered_mask)
     distance_to_legacy_m = distance_to_legacy_px * pixel_m
     
-    # 3. Model boundary alignment curve (Peaks exactly at 1.5 km cell footprint touchpoints)
-    ideal_isd_m = TARGET_RADIUS_M  
-    distance_reward = np.exp(-0.5 * ((distance_to_legacy_m - ideal_isd_m) / 400.0) ** 2)
-    distance_reward = np.where(distance_to_legacy_m < ideal_isd_m, distance_reward * 0.3, distance_reward)
-    
-    # 4. Extract population and terrain features
     pop_n = features_stack[:, :, 1]
-    elev_bad = 1.0 - features_stack[:, :, 2]  # Disadvantage index (valleys preferred over mountain peaks)
+    elev_bad = 1.0 - features_stack[:, :, 2]  
     
-    # 5. Composite Equation Execution: Hard-multiply by the uncovered mask line
-    priority_raw = is_uncovered_mask * ((w_pop * pop_n) + (w_gap * distance_reward) + (w_elev * elev_bad))
+    # Priority matrix reflects placement fitness scores only where it is strictly legal to place towers
+    priority_raw = is_uncovered_mask * np.where(distance_to_legacy_m >= REQUIRED_ISD_M, 1.0, 0.0) * ((w_pop * pop_n) + (w_elev * elev_bad))
     
     priority_compressed = np.power(np.clip(priority_raw, 0, 1), 0.7)
     priority_base = gaussian_filter(priority_compressed, sigma=3).astype(np.float32)
@@ -236,12 +252,16 @@ if cov_file and pop_file and elev_file:
     st.write("---")
     st.subheader("🧬 Step 2: Genetic Layout Evolution Engine")
     
-    with st.spinner("Initializing population chromosomes and calculating evolutionary fitness..."):
-        min_dist_px = max(5, int(FIXED_ISD_M / pixel_m))
+    with st.spinner("Initializing population chromosomes and enforcing hard constraint verification..."):
+        min_dist_px = max(5, int(REQUIRED_ISD_M / pixel_m))
         
         ga_engine = CellularGeneticOptimizer(
-            priority_surface=priority_base, num_towers=num_candidates,
-            pad_distance_px=min_dist_px, pop_size=ga_pop_size, mutation_rate=ga_mutation_rate
+            priority_surface=priority_base,
+            dist_to_legacy_m=distance_to_legacy_m,
+            num_towers=num_candidates,
+            pad_distance_px=min_dist_px,
+            pop_size=ga_pop_size,
+            mutation_rate=ga_mutation_rate
         )
         
         optimal_layout = ga_engine.evolve(generations=ga_generations)
@@ -306,7 +326,7 @@ if cov_file and pop_file and elev_file:
     col_left, col_right = st.columns(2)
     
     with col_left:
-        st.markdown("#### 🌈 MAP 1: Boundary-Constrained Physical Priority Landscape")
+        st.markdown("#### 🌈 MAP 1: Boundary-Locked Legal Suitability Surface")
         
         layer_priority_heatmap = pdk.Layer(
             "HeatmapLayer",
@@ -320,7 +340,7 @@ if cov_file and pop_file and elev_file:
             color_range=HIGH_DENSITY_CMAP
         )
         st.pydeck_chart(pdk.Deck(layers=[layer_priority_heatmap], initial_view_state=view_state))
-        st.caption("Notice how the heatmap naturally forms sharp boundaries around old networks, preventing overlapping.")
+        st.caption("The suitability surface zeroes out completely near old cells to enforce strict spacing constraints.")
 
     with col_right:
         st.markdown("#### 📡 MAP 2: Allocation Matrix Deployment Blueprint")

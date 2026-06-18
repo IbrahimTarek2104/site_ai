@@ -92,20 +92,16 @@ if total_w > 0:
 # 3. Local RF Physics Propagation Engine
 # ==========================================
 def simulate_local_physics(r, c, shape, pixel_m, radius_m):
-    """Computes dynamic, relative path loss parameters at target indices."""
     h, w = shape
     yx = np.indices((h, w))
     
-    # Calculate pure internal matrix distance offsets
     dist_px = np.sqrt((yx[0] - r)**2 + (yx[1] - c)**2)
     dist_m = dist_px * pixel_m
-    dist_m = np.maximum(dist_m, pixel_m) # clip floor bound
+    dist_m = np.maximum(dist_m, pixel_m) 
     
-    # COST-231 Hata empirical path loss model implementation
     simulated_rsrp = -50.0 - (44.9 - 6.55 * np.log10(30.0)) * np.log10(np.maximum(dist_m/1000.0, 0.001))
     simulated_rsrp = np.clip(simulated_rsrp, -130.0, -44.0)
     
-    # SINR variation depending directly on target exclusion boundaries
     simulated_sinr = simulated_rsrp - (-95.0) - (dist_m / radius_m) * 12.0
     simulated_sinr = np.clip(simulated_sinr, -8.0, 28.0)
     
@@ -192,14 +188,10 @@ if cov_file and pop_file and elev_file:
                 if priority_current[r, c] < 0.05:
                     break
                     
-                # Extract native file projected coordinates (e.g. Easting/Northing meters)
                 native_lon, native_lat = rasterio.transform.xy(transform, r, c, offset="center")
-                
-                # 💥 CRUCIAL CRS CONVERSION: Translate local projection to WGS84 global coordinates
                 longitudes, latitudes = warp_transform(meta['crs'], 'EPSG:4326', [native_lon], [native_lat])
                 global_lon, global_lat = longitudes[0], latitudes[0]
                 
-                # Run relative math for signal telemetry calculations
                 site_rsrp, site_sinr = simulate_local_physics(r, c, (orig_h, orig_w), pixel_m, coverage_rad_m)
                 
                 disc = ((yx[0] - r)**2 + (yx[1] - c)**2) <= coverage_rad_px**2
@@ -222,77 +214,71 @@ if cov_file and pop_file and elev_file:
 
             df_candidates = pd.DataFrame(candidates)
         
-        # ========================================================
-        # 🗺️ VISUALIZATION MAP GENERATION: 3D TOWERS ON HEATMAP
-        # ========================================================
         col1, col2 = st.columns([3, 2])
         with col1:
             st.write("#### 🗺️ Interactive 3D Blueprint over AI Suitability Heatmap")
             
-            # 1. Convert the entire dense prob_map matrix into flat coordinates for the heatmap layer
-            # To prevent performance lag on massive images, we downsample the background grid visualization slightly
             step_stride = max(1, int(max(orig_h, orig_w) / 150)) 
+            heatmap_data = []
             
-        heatmap_data = []
-        for r in range(0, orig_h, step_stride):
-            for c in range(0, orig_w, step_stride):
-                # 🚀 FIX A: Plot the combined optimization surface, not the raw saturated U-Net output
-                val = float(priority_base[r, c])
-                
-                if val > 0.05:
-                    # 🚀 FIX B: Shift the value non-linearly to force contrast between the "flat" high zones
-                    # Pushing the contrast dynamically helps separate a 0.92 from a 0.99 on screen
-                    display_weight = (val - 0.5) / 0.5 if val > 0.5 else 0.01
+            for r in range(0, orig_h, step_stride):
+                for c in range(0, orig_w, step_stride):
+                    # 🚀 FIX: Pull values from final combined layout layer to highlight optimization terrain
+                    val = float(priority_base[r, c])
                     
-                    n_lon, n_lat = rasterio.transform.xy(transform, r, c, offset="center")
-                    g_lons, g_lats = warp_transform(meta['crs'], 'EPSG:4326', [n_lon], [n_lat])
-                    heatmap_data.append({
-                        "lon": g_lons[0],
-                        "lat": g_lats[0],
-                        "weight": float(display_weight)
-                    })
-        
+                    if val > 0.05:
+                        # 🚀 FIX: Linear shifting contrasts dense areas out from saturated backgrounds
+                        display_weight = (val - 0.4) / 0.6 if val > 0.4 else 0.01
+                        
+                        n_lon, n_lat = rasterio.transform.xy(transform, r, c, offset="center")
+                        g_lons, g_lats = warp_transform(meta['crs'], 'EPSG:4326', [n_lon], [n_lat])
+                        heatmap_data.append({
+                            "lon": g_lons[0],
+                            "lat": g_lats[0],
+                            "weight": float(display_weight)
+                        })
+            
             df_heatmap = pd.DataFrame(heatmap_data)
             
-            # 2. Configure Pydeck view viewport
+            # 🎨 Professional 15-Band Spectral Color Mapping Profile
+            HIGH_DENSITY_CMAP = [
+                [0, 0, 30, 0],          # Transparent Baseline
+                [30, 0, 100, 35],       # Deep Violet
+                [0, 60, 200, 60],       # Cobalt Blue
+                [0, 120, 255, 85],      # Sky Blue
+                [0, 180, 220, 110],     # Cyan
+                [0, 220, 150, 130],     # Teal-Green
+                [0, 245, 80, 150],      # Emerald Green
+                [100, 255, 0, 170],     # Lime
+                [190, 255, 0, 190],     # Chartreuse
+                [255, 255, 0, 210],     # Neon Yellow
+                [255, 190, 0, 225],     # Amber Orange
+                [255, 120, 0, 240],     # Tangerine
+                [255, 50, 0, 250],      # Vermilion
+                [220, 0, 40, 255],      # Crimson Red
+                [160, 0, 80, 255]       # Peak Ruby Fuchsia
+            ]
+            
             view_state = pdk.ViewState(
                 latitude=df_candidates['lat'].mean(), 
                 longitude=df_candidates['lon'].mean(), 
                 zoom=12.5, 
                 pitch=45
             )
-            HIGH_CONTRAST_CMAP = [
-                [48, 18, 59, 0],       # Low baseline (Transparent)
-                [70, 74, 180, 40],     # Dark Indigo
-                [67, 126, 249, 70],    # Blue
-                [40, 174, 253, 95],    # Light Blue
-                [24, 215, 203, 120],   # Turquoise
-                [54, 244, 139, 145],   # Spring Green
-                [118, 254, 78, 170],   # Bright Green
-                [181, 242, 53, 190],   # Yellow-Green
-                [230, 208, 51, 210],   # Pale Yellow
-                [254, 156, 42, 225],   # Orange
-                [247, 95, 23, 240],    # Dark Orange
-                [220, 44, 5, 250],     # Orange-Red
-                [179, 11, 2, 255],     # Deep Red
-                [136, 1, 10, 255],     # Maroon
-                [90, 0, 15, 255]       # Dark Crimson Peak
-                ]
-            # 3. Layer A: The Continuous AI Suitability Grid Layer (The Heatmap)
+            
             suitability_heatmap_layer = pdk.Layer(
                 "HeatmapLayer",
                 df_heatmap,
                 get_position="[lon, lat]",
                 get_weight="weight",
-                radius_pixels=30,
-                intensity=1.2,
-                threshold=0.05,
+                radius_pixels=25,
+                intensity=3.0,
+                threshold=0.01,
                 aggregation='"MEAN"',
-                color_range=HIGH_CONTRAST_CMAP,
-                color_domain=[0.01, 0.8])
+                color_range=HIGH_DENSITY_CMAP,
+                color_domain=[0.02, 0.75]
+            )
             
-            
-            # 4. Layer B: The 3D Tower Masts
             df_candidates['color_r'] = np.where(df_candidates['rsrp'] > -85, 0, 240)
             df_candidates['color_g'] = np.where(df_candidates['rsrp'] > -85, 230, 80)
             
@@ -307,7 +293,6 @@ if cov_file and pop_file and elev_file:
                 extruded=True
             )
             
-            # 5. Render the multi-layer map canvas
             st.pydeck_chart(pdk.Deck(
                 layers=[suitability_heatmap_layer, tower_layer], 
                 initial_view_state=view_state, 
@@ -339,7 +324,6 @@ if cov_file and pop_file and elev_file:
         target_r, target_c = rasterio.transform.rowcol(transform, target_lon_m, target_lat_m)
         
         if (0 <= target_r < orig_h) and (0 <= target_c < orig_w):
-            # Translate specific target inputs to WGS84 for Pydeck positioning
             gl_lons, gl_lats = warp_transform(meta['crs'], 'EPSG:4326', [target_lon_m], [target_lat_m])
             m_lon, m_lat = gl_lons[0], gl_lats[0]
             

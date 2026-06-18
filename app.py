@@ -15,7 +15,7 @@ from pipeline.data_pipeline import ProductionInferencePipeline
 # 1. Page Configuration & Base Setup
 # ==========================================
 st.set_page_config(page_title="AI Site Planner", layout="wide", initial_sidebar_state="expanded")
-st.title("🛰️ Evolutionary Geospatial Cellular Site Network Planning Engine")
+st.title("🛰️ Unified Evolutionary AI Cellular Site Network Planning Dashboard")
 st.write("---")
 
 pipeline = ProductionInferencePipeline(patch_size=64)
@@ -208,11 +208,12 @@ if cov_file and pop_file and elev_file:
     sinr_bad = 1.0 - features_stack[:, :, 0] 
     elev_bad = 1.0 - features_stack[:, :, 2]
     
-    # 🚀 RE-INTEGRATED CORE FORMULA: Uses both spatial filters and neural network predictions
     priority_raw = (w_prob * prob_map) + (w_pop * pop_n) + (w_sinr * sinr_bad) + (w_elev * elev_bad)
     priority_compressed = np.power(np.clip(priority_raw, 0, 1), 0.6)
     priority_base = gaussian_filter(priority_compressed, sigma=5).astype(np.float32)
-    priority_base = (priority_base - priority_base.min()) / (priority_base.max() - priority_base.min() + 1e-8)
+    p_min, p_max = float(priority_base.min()), float(priority_base.max())
+    p_range = p_max - p_min if (p_max - p_min) > 1e-5 else 1.0
+    priority_base = (priority_base - p_min) / p_range
 
     # ==========================================
     # 6. Execute Genetic Optimization
@@ -244,71 +245,141 @@ if cov_file and pop_file and elev_file:
             })
         df_candidates = pd.DataFrame(candidates)
 
-    # Extract coordinates from baseline coverage file for mapping
+    # Extract clean 2D coordinates for legacy coverage layers
     with st.spinner("Extracting legacy network layout positions..."):
-        step_stride = max(1, int(max(orig_h, orig_w) / 120))
+        step_stride = max(1, int(max(orig_h, orig_w) / 140))
         baseline_coverage_map = features_stack[:, :, 0]
         
         legacy_cells = []
+        heatmap_data = []
+        
         for r in range(0, orig_h, step_stride):
             for c in range(0, orig_w, step_stride):
+                n_lon, n_lat = rasterio.transform.xy(transform, r, c, offset="center")
+                g_lons, g_lats = warp_transform(meta['crs'], 'EPSG:4326', [n_lon], [n_lat])
+                
+                # 1. Store existing coverage pixels
                 if baseline_coverage_map[r, c] > 0.5:
-                    n_lon, n_lat = rasterio.transform.xy(transform, r, c, offset="center")
-                    g_lons, g_lats = warp_transform(meta['crs'], 'EPSG:4326', [n_lon], [n_lat])
                     legacy_cells.append({"lon": g_lons[0], "lat": g_lats[0]})
+                
+                # 2. Store priority scoring values
+                val = float(priority_base[r, c])
+                if val > 0.05:
+                    heatmap_data.append({
+                        "lon": g_lons[0], "lat": g_lats[0],
+                        "weight": val
+                    })
+                    
         df_legacy = pd.DataFrame(legacy_cells)
+        df_heatmap = pd.DataFrame(heatmap_data)
 
     # ==========================================
-    # 7. Side-by-Side Blueprint Visualization
+    # 7. Unified Multi-Layer Blueprint Map
     # ==========================================
     st.write("---")
-    st.write("### 🗺️ Comparative Spatial Blueprint: Before vs After Genetic Adaptation")
     
-    view_state = pdk.ViewState(
-        latitude=df_candidates['lat'].mean(), longitude=df_candidates['lon'].mean(), zoom=12.2, pitch=35
-    )
+    col_map, col_metrics = st.columns([3, 2])
     
-    col_before, col_after = st.columns(2)
-    
-    with col_before:
-        st.markdown("#### 🟥 BEFORE: Unoptimized Network & Coverage Gaps")
-        legacy_coverage_layer = pdk.Layer(
-            "ScatterplotLayer", df_legacy, get_position="[lon, lat]",
-            get_radius=FIXED_RADIUS_M, get_fill_color=[240, 50, 50, 40], pickable=False
-        )
-        st.pydeck_chart(pdk.Deck(layers=[legacy_coverage_layer], initial_view_state=view_state))
-        st.caption("Red regions represent existing baseline footprints. Wide dark zones show unserved network gaps.")
-
-    with col_after:
-        st.markdown("#### 🟩 AFTER: Optimized Genetic Tower Distribution")
-        bg_legacy_layer = pdk.Layer(
-            "ScatterplotLayer", df_legacy, get_position="[lon, lat]",
-            get_radius=FIXED_RADIUS_M, get_fill_color=[100, 100, 100, 25], pickable=False
-        )
-        new_coverage_footprint_layer = pdk.Layer(
-            "ScatterplotLayer", df_candidates, get_position="[lon, lat]",
-            get_radius=FIXED_RADIUS_M, get_fill_color=[40, 220, 120, 60],
-            get_line_color=[0, 180, 80, 200], line_width_min_pixels=1.5
-        )
-        new_tower_layer = pdk.Layer(
-            "ColumnLayer", df_candidates, get_position="[lon, lat]",
-            get_elevation=350, radius=50, get_fill_color=[0, 240, 255, 255], extruded=True, pickable=True
+    with col_map:
+        st.write("### 🗺️ Unified AI Structural Blueprint Layer Model")
+        
+        # Define 15-Band High-Resolution Color Palette
+        HIGH_DENSITY_CMAP = [
+            [0, 0, 30, 0],          # Baseline
+            [30, 0, 100, 45],       # Violet
+            [0, 60, 200, 70],       # Cobalt Blue
+            [0, 120, 255, 95],      # Sky Blue
+            [0, 180, 220, 120],     # Cyan
+            [0, 220, 150, 140],     # Teal
+            [0, 245, 80, 160],      # Emerald
+            [100, 255, 0, 180],     # Lime Green
+            [190, 255, 0, 195],     # Yellow-Green
+            [255, 255, 0, 210],     # Pure Yellow
+            [255, 190, 0, 225],     # Amber
+            [255, 120, 0, 235],     # Tangerine
+            [255, 50, 0, 245],      # Vermilion
+            [220, 0, 40, 255],      # Crimson Red
+            [160, 0, 80, 255]       # Peak Ruby
+        ]
+        
+        view_state = pdk.ViewState(
+            latitude=df_candidates['lat'].mean(), longitude=df_candidates['lon'].mean(), zoom=11.8, pitch=40
         )
         
+        # LAYER A: Previous Baseline Coverage (Flat Red Mask)
+        layer_legacy_mask = pdk.Layer(
+            "ScreenGridLayer",
+            df_legacy,
+            get_position="[lon, lat]",
+            cell_size_pixels=2.5,
+            color_range=[[0, 0, 0, 0], [240, 50, 50, 130]],
+            pickable=False
+        )
+        
+        # LAYER B: Dynamic Composite Suitability Heatmap Grid
+        layer_priority_heatmap = pdk.Layer(
+            "GridLayer",
+            df_heatmap,
+            get_position="[lon, lat]",
+            get_weight="weight",
+            cell_size=130,
+            extruded=False,
+            color_range=HIGH_DENSITY_CMAP,
+            color_scale_type='"linear"',
+            aggregation='"MAX"',
+            opacity=0.65
+        )
+        
+        # LAYER C: New Genetically Evolved Coverage Footprints (Translucent Green)
+        layer_new_footprints = pdk.Layer(
+            "ScatterplotLayer",
+            df_candidates,
+            get_position="[lon, lat]",
+            get_radius=FIXED_RADIUS_M,
+            get_fill_color=[40, 240, 100, 45],
+            get_line_color=[0, 180, 60, 160],
+            line_width_min_pixels=1.5
+        )
+        
+        # LAYER D: Hardware Target Deployments (Cyan 3D Pillars)
+        layer_3d_towers = pdk.Layer(
+            "ColumnLayer",
+            df_candidates,
+            get_position="[lon, lat]",
+            get_elevation=450,
+            radius=55,
+            get_fill_color=[0, 240, 255, 255],
+            extruded=True,
+            pickable=True
+        )
+        
+        # Render Unified Map
         st.pydeck_chart(pdk.Deck(
-            layers=[bg_legacy_layer, new_coverage_footprint_layer, new_tower_layer], 
+            layers=[layer_legacy_mask, layer_priority_heatmap, layer_new_footprints, layer_3d_towers],
             initial_view_state=view_state,
             tooltip={"text": "Rank: {rank}\nEst RSRP: {rsrp} dBm\nEst SINR: {sinr} dB"}
         ))
-        st.caption("Cyan columns represent new towers. Green translucent circles track the newly optimized coverage profiles.")
+        
+        # Map Legend Callouts
+        st.markdown(
+            """
+            <div style="display: flex; gap: 15px; font-size: 13px; margin-top: 5px;">
+                <div>🔴 <span style="color:#f03232; font-weight:bold;">Legacy Coverage</span> (Baseline Grid)</div>
+                <div>🌈 <span style="font-weight:bold;">AI Suitability Map</span> (Spectral Heat Gradients)</div>
+                <div>🟢 <span style="color:#28f064; font-weight:bold;">New Footprints</span> (2km Genetically Evolved Discs)</div>
+                <div>🔷 <span style="color:#00f0ff; font-weight:bold;">Hardware Masts</span> (3D Cyan Tower Columns)</div>
+            </div>
+            """, 
+            unsafe_allow_html=True
+        )
 
-    # Data Report
-    st.write("---")
-    st.write("#### 📈 Evolved Candidate Site Allocation Metrics")
-    st.dataframe(
-        df_candidates[["rank", "native_lat", "native_lon", "rsrp", "sinr"]].rename(
-            columns={"native_lat": "Northing (m)", "native_lon": "Easting (m)", "rsrp": "Est RSRP (dBm)", "sinr": "Est SINR (dB)"}
-        ), use_container_width=True, hide_index=True
-    )
+    with col_metrics:
+        st.write("### 📈 Evolved Candidate Site Allocation Metrics")
+        st.dataframe(
+            df_candidates[["rank", "native_lat", "native_lon", "rsrp", "sinr"]].rename(
+                columns={"native_lat": "Northing (m)", "native_lon": "Easting (m)", "rsrp": "Est RSRP (dBm)", "sinr": "Est SINR (dB)"}
+            ), use_container_width=True, hide_index=True
+        )
+        st.metric("Total Genetic Allocations", f"{len(df_candidates)} Active Sites")
 else:
-    st.info("👈 Please upload all three foundational environment rasters in the main layout panel to initiate the spatial allocation engine.")
+    st.info("👈 Please upload all three foundational environment rasters in the main layout panel to initiate the unified dashboard map engine.")

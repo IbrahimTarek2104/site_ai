@@ -233,25 +233,25 @@ if cov_file and pop_file and elev_file:
             # To prevent performance lag on massive images, we downsample the background grid visualization slightly
             step_stride = max(1, int(max(orig_h, orig_w) / 150)) 
             
-           heatmap_data = []
-            for r in range(0, orig_h, step_stride):
-                for c in range(0, orig_w, step_stride):
-                    # 🚀 FIX A: Plot the combined optimization surface, not the raw saturated U-Net output
-                    val = float(priority_base[r, c])
+        heatmap_data = []
+        for r in range(0, orig_h, step_stride):
+            for c in range(0, orig_w, step_stride):
+                # 🚀 FIX A: Plot the combined optimization surface, not the raw saturated U-Net output
+                val = float(priority_base[r, c])
+                
+                if val > 0.05:
+                    # 🚀 FIX B: Shift the value non-linearly to force contrast between the "flat" high zones
+                    # Pushing the contrast dynamically helps separate a 0.92 from a 0.99 on screen
+                    display_weight = (val - 0.5) / 0.5 if val > 0.5 else 0.01
                     
-                    if val > 0.05:
-                        # 🚀 FIX B: Shift the value non-linearly to force contrast between the "flat" high zones
-                        # Pushing the contrast dynamically helps separate a 0.92 from a 0.99 on screen
-                        display_weight = (val - 0.5) / 0.5 if val > 0.5 else 0.01
-                        
-                        n_lon, n_lat = rasterio.transform.xy(transform, r, c, offset="center")
-                        g_lons, g_lats = warp_transform(meta['crs'], 'EPSG:4326', [n_lon], [n_lat])
-                        heatmap_data.append({
-                            "lon": g_lons[0],
-                            "lat": g_lats[0],
-                            "weight": float(display_weight)
-                        })
-            
+                    n_lon, n_lat = rasterio.transform.xy(transform, r, c, offset="center")
+                    g_lons, g_lats = warp_transform(meta['crs'], 'EPSG:4326', [n_lon], [n_lat])
+                    heatmap_data.append({
+                        "lon": g_lons[0],
+                        "lat": g_lats[0],
+                        "weight": float(display_weight)
+                    })
+        
             df_heatmap = pd.DataFrame(heatmap_data)
             
             # 2. Configure Pydeck view viewport

@@ -221,14 +221,23 @@ if cov_file and pop_file and elev_file:
             step_stride = max(1, int(max(orig_h, orig_w) / 150)) 
             heatmap_data = []
             
+            # Find the true active maximum before stretching
+            p_max = priority_base.max() if priority_base.max() > 0 else 1.0
+            
             for r in range(0, orig_h, step_stride):
                 for c in range(0, orig_w, step_stride):
-                    # 🚀 FIX: Pull values from final combined layout layer to highlight optimization terrain
                     val = float(priority_base[r, c])
                     
-                    if val > 0.05:
-                        # 🚀 FIX: Linear shifting contrasts dense areas out from saturated backgrounds
-                        display_weight = (val - 0.4) / 0.6 if val > 0.4 else 0.01
+                    if val > 0.01:
+                        # 🚀 THE MATH INVERSION FIX:
+                        # Instead of mapping the flat ceiling, we model the gradient *leading up* to it.
+                        # This strips away the plateau effect and reveals the underlying smooth distance curves.
+                        if val >= 0.99:
+                            # Let the wide open spaces sit at a stable mid-tone blue/cyan baseline
+                            display_weight = 0.25  
+                        else:
+                            # Map the slopes around the black circles into smooth gradients
+                            display_weight = val * 0.8
                         
                         n_lon, n_lat = rasterio.transform.xy(transform, r, c, offset="center")
                         g_lons, g_lats = warp_transform(meta['crs'], 'EPSG:4326', [n_lon], [n_lat])

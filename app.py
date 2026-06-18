@@ -21,7 +21,6 @@ st.write("---")
 pipeline = ProductionInferencePipeline(patch_size=64)
 
 MODEL_PATH = "models/unet_best.pth"
-# 📋 PASTE YOUR COPIED DROPBOX LINK DIRECTLY HERE (ENSURE IT ENDS WITH dl=1)
 DROPBOX_URL = "https://www.dropbox.com/scl/fi/abc123xyz/unet_best.pth?rlkey=xyz123&dl=1"
 
 @st.cache_resource
@@ -70,15 +69,14 @@ ga_mutation_rate = st.sidebar.slider("Mutation Probability", 0.01, 0.30, 0.15, 0
 
 st.sidebar.write("---")
 st.sidebar.header("📊 Multi-Tier Priority Weights")
-w_prob = st.sidebar.slider("Model Confidence Weight (U-Net)", 0.0, 1.0, 0.35, 0.05)
-w_pop = st.sidebar.slider("Population Demand Weight", 0.0, 1.0, 0.30, 0.05)
-w_sinr = st.sidebar.slider("Baseline Service Gap Weight", 0.0, 1.0, 0.20, 0.05)
+w_pop = st.sidebar.slider("Population Demand Weight", 0.0, 1.0, 0.50, 0.05)
+w_gap = st.sidebar.slider("Boundary Inter-Site Distance Reward", 0.0, 1.0, 0.35, 0.05)
 w_elev = st.sidebar.slider("Terrain Topography Weight", 0.0, 1.0, 0.15, 0.05)
 
 # Enforce normalization of priority weights
-total_w = w_prob + w_pop + w_sinr + w_elev
+total_w = w_pop + w_gap + w_elev
 if total_w > 0:
-    w_prob, w_pop, w_sinr, w_elev = w_prob/total_w, w_pop/total_w, w_sinr/total_w, w_elev/total_w
+    w_pop, w_gap, w_elev = w_pop/total_w, w_gap/total_w, w_elev/total_w
 
 FIXED_ISD_M = 1500.0        
 TARGET_RADIUS_M = 1500.0     
@@ -184,7 +182,7 @@ if cov_file and pop_file and elev_file:
         
     st.success(f"Geospatial arrays processed successfully! Active layout: {orig_h}x{orig_w} pixels at {pixel_m:.1f}m/px.")
 
-    # Neural Network Spatial Prediction Pipeline
+    # Neural Network Background Inference Pipeline (Retained as requested)
     with st.spinner("Executing Attention U-Net Inference across patch spaces..."):
         prob_acc = np.zeros((pad_h, pad_w), dtype=np.float64)
         wgt_acc = np.zeros((pad_h, pad_w), dtype=np.float64)
@@ -203,14 +201,31 @@ if cov_file and pop_file and elev_file:
         prob_map = np.where(wgt_acc > 0, prob_acc / wgt_acc, 0.0).astype(np.float32)
         prob_map = prob_map[0:orig_h, 0:orig_w]
 
-    # Integrated Unified Priority Scoring Function
-    pop_n = features_stack[:, :, 1]
-    sinr_bad = 1.0 - features_stack[:, :, 0] 
-    elev_bad = 1.0 - features_stack[:, :, 2]
+    # ========================================================
+    # 🧠 NEW STRUCTURAL PRIORITY SCORING ENGINE (NO UNET WEIGHT)
+    # ========================================================
+    # 1. Isolate the binary uncovered space matrix
+    is_covered = (features_stack[:, :, 0] > 0.4).astype(np.uint8)
+    is_uncovered_mask = (1 - is_covered).astype(np.float32)
     
-    priority_raw = (w_prob * prob_map) + (w_pop * pop_n) + (w_sinr * sinr_bad) + (w_elev * elev_bad)
-    priority_compressed = np.power(np.clip(priority_raw, 0, 1), 0.6)
-    priority_base = gaussian_filter(priority_compressed, sigma=5).astype(np.float32)
+    # 2. Compute precise Euclidean metric distance steps away from legacy coverage zones
+    distance_to_legacy_px = distance_transform_edt(is_uncovered_mask)
+    distance_to_legacy_m = distance_to_legacy_px * pixel_m
+    
+    # 3. Model boundary alignment curve (Peaks exactly at 1.5 km cell footprint touchpoints)
+    ideal_isd_m = TARGET_RADIUS_M  
+    distance_reward = np.exp(-0.5 * ((distance_to_legacy_m - ideal_isd_m) / 400.0) ** 2)
+    distance_reward = np.where(distance_to_legacy_m < ideal_isd_m, distance_reward * 0.3, distance_reward)
+    
+    # 4. Extract population and terrain features
+    pop_n = features_stack[:, :, 1]
+    elev_bad = 1.0 - features_stack[:, :, 2]  # Disadvantage index (valleys preferred over mountain peaks)
+    
+    # 5. Composite Equation Execution: Hard-multiply by the uncovered mask line
+    priority_raw = is_uncovered_mask * ((w_pop * pop_n) + (w_gap * distance_reward) + (w_elev * elev_bad))
+    
+    priority_compressed = np.power(np.clip(priority_raw, 0, 1), 0.7)
+    priority_base = gaussian_filter(priority_compressed, sigma=3).astype(np.float32)
     p_min, p_max = float(priority_base.min()), float(priority_base.max())
     p_range = p_max - p_min if (p_max - p_min) > 1e-5 else 1.0
     priority_base = (priority_base - p_min) / p_range
@@ -231,7 +246,6 @@ if cov_file and pop_file and elev_file:
         
         optimal_layout = ga_engine.evolve(generations=ga_generations)
         
-        # Build candidate coordinates dataset
         candidates = []
         for step, (r, c) in enumerate(optimal_layout):
             native_lon, native_lat = rasterio.transform.xy(transform, r, c, offset="center")
@@ -258,11 +272,11 @@ if cov_file and pop_file and elev_file:
                 n_lon, n_lat = rasterio.transform.xy(transform, r, c, offset="center")
                 g_lons, g_lats = warp_transform(meta['crs'], 'EPSG:4326', [n_lon], [n_lat])
                 
-                if baseline_coverage_map[r, c] > 0.5:
+                if baseline_coverage_map[r, c] > 0.4:
                     legacy_cells.append({"lon": g_lons[0], "lat": g_lats[0]})
                 
                 val = float(priority_base[r, c])
-                if val > 0.05:
+                if val > 0.03:
                     heatmap_data.append({"lon": g_lons[0], "lat": g_lats[0], "weight": val})
                     
         df_legacy = pd.DataFrame(legacy_cells)
@@ -273,7 +287,6 @@ if cov_file and pop_file and elev_file:
     # ==========================================
     st.write("---")
     
-    # Clean 15-Band High-Resolution Color Palette for the priority map
     HIGH_DENSITY_CMAP = [
         [0, 0, 30, 0], [30, 0, 100, 45], [0, 60, 200, 70], [0, 120, 255, 95],
         [0, 180, 220, 120], [0, 220, 150, 140], [0, 245, 80, 160], [100, 255, 0, 180],
@@ -281,10 +294,9 @@ if cov_file and pop_file and elev_file:
         [255, 50, 0, 245], [220, 0, 40, 255], [160, 0, 80, 255]
     ]
     
-    # Solid Red Palette for the legacy covered areas
     LEGACY_RED_CMAP = [
-        [230, 50, 50, 0], [230, 50, 50, 40], [230, 50, 50, 80], 
-        [230, 50, 50, 120], [230, 50, 50, 160], [230, 50, 50, 190]
+        [230, 50, 50, 0], [230, 50, 50, 50], [230, 50, 50, 95], 
+        [230, 50, 50, 140], [230, 50, 50, 185], [230, 50, 50, 220]
     ]
     
     view_state = pdk.ViewState(
@@ -294,21 +306,21 @@ if cov_file and pop_file and elev_file:
     col_left, col_right = st.columns(2)
     
     with col_left:
-        st.markdown("#### 🌈 MAP 1: Composite AI Suitability Priority Landscape")
+        st.markdown("#### 🌈 MAP 1: Boundary-Constrained Physical Priority Landscape")
         
         layer_priority_heatmap = pdk.Layer(
             "HeatmapLayer",
             df_heatmap,
             get_position="[lon, lat]",
             get_weight="weight",
-            radius_pixels=30,          
+            radius_pixels=25,          
             intensity=2.5,
             threshold=0.02,
             aggregation='"MEAN"',
             color_range=HIGH_DENSITY_CMAP
         )
         st.pydeck_chart(pdk.Deck(layers=[layer_priority_heatmap], initial_view_state=view_state))
-        st.caption("Gradients isolate localized suitabilities combining U-Net inference and geographic layers.")
+        st.caption("Notice how the heatmap naturally forms sharp boundaries around old networks, preventing overlapping.")
 
     with col_right:
         st.markdown("#### 📡 MAP 2: Allocation Matrix Deployment Blueprint")
@@ -317,9 +329,9 @@ if cov_file and pop_file and elev_file:
             "HeatmapLayer",
             df_legacy,
             get_position="[lon, lat]",
-            radius_pixels=25,
-            intensity=3.0,
-            threshold=0.05,
+            radius_pixels=22,
+            intensity=3.5,
+            threshold=0.04,
             color_range=LEGACY_RED_CMAP,
             pickable=False
         )

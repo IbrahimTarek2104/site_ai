@@ -257,13 +257,22 @@ if cov_file and pop_file and elev_file:
                 pitch=45
             )
             HIGH_CONTRAST_CMAP = [
-                [0, 20, 50, 0],       # 0% - Totally Transparent Dark Base
-                [0, 100, 240, 70],    # 20% - Cool Electric Blue (Low Suitability)
-                [130, 0, 255, 130],   # 40% - Deep Purple (Moderate)
-                [255, 0, 130, 180],   # 60% - Vibrant Magenta (High)
-                [255, 80, 0, 220],    # 80% - Neon Orange (Very High)
-                [255, 255, 0, 255]    # 100% - Laser Yellow (Peak Hotspots)
-            ]
+                [48, 18, 59, 0],       # Low baseline (Transparent)
+                [70, 74, 180, 40],     # Dark Indigo
+                [67, 126, 249, 70],    # Blue
+                [40, 174, 253, 95],    # Light Blue
+                [24, 215, 203, 120],   # Turquoise
+                [54, 244, 139, 145],   # Spring Green
+                [118, 254, 78, 170],   # Bright Green
+                [181, 242, 53, 190],   # Yellow-Green
+                [230, 208, 51, 210],   # Pale Yellow
+                [254, 156, 42, 225],   # Orange
+                [247, 95, 23, 240],    # Dark Orange
+                [220, 44, 5, 250],     # Orange-Red
+                [179, 11, 2, 255],     # Deep Red
+                [136, 1, 10, 255],     # Maroon
+                [90, 0, 15, 255]       # Dark Crimson Peak
+                ]
             # 3. Layer A: The Continuous AI Suitability Grid Layer (The Heatmap)
             suitability_heatmap_layer = pdk.Layer(
                 "HeatmapLayer",

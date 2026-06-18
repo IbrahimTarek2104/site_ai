@@ -221,23 +221,22 @@ if cov_file and pop_file and elev_file:
             step_stride = max(1, int(max(orig_h, orig_w) / 150)) 
             heatmap_data = []
             
-            # Find the true active maximum before stretching
-            p_max = priority_base.max() if priority_base.max() > 0 else 1.0
+            # 🚀 Step 1: Find local min/max of your original priority map to stretch the contrast
+            p_min = float(priority_base.min())
+            p_max = float(priority_base.max())
+            p_range = p_max - p_min if (p_max - p_min) > 1e-5 else 1.0
             
             for r in range(0, orig_h, step_stride):
                 for c in range(0, orig_w, step_stride):
                     val = float(priority_base[r, c])
                     
-                    if val > 0.01:
-                        # 🚀 THE MATH INVERSION FIX:
-                        # Instead of mapping the flat ceiling, we model the gradient *leading up* to it.
-                        # This strips away the plateau effect and reveals the underlying smooth distance curves.
-                        if val >= 0.99:
-                            # Let the wide open spaces sit at a stable mid-tone blue/cyan baseline
-                            display_weight = 0.25  
-                        else:
-                            # Map the slopes around the black circles into smooth gradients
-                            display_weight = val * 0.8
+                    if val > 0.05:
+                        # 🚀 Step 2: Dynamically normalize the original score cell-by-cell 
+                        # This turns subtle variations into a full 0.0 to 1.0 gradient!
+                        normalized_weight = (val - p_min) / p_range
+                        
+                        # Apply a minor contrast curve so the edges fade out smoothly
+                        display_weight = np.power(normalized_weight, 1.5)
                         
                         n_lon, n_lat = rasterio.transform.xy(transform, r, c, offset="center")
                         g_lons, g_lats = warp_transform(meta['crs'], 'EPSG:4326', [n_lon], [n_lat])
@@ -247,6 +246,7 @@ if cov_file and pop_file and elev_file:
                             "weight": float(display_weight)
                         })
             
+            df_heatmap = pd.DataFrame(heatmap_data)
             df_heatmap = pd.DataFrame(heatmap_data)
             
             # 🎨 Professional 15-Band Spectral Color Mapping Profile

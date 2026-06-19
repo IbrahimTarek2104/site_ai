@@ -21,7 +21,7 @@ st.write("---")
 pipeline = ProductionInferencePipeline(patch_size=64)
 
 MODEL_PATH = "models/unet_best.pth"
-DROPBOX_URL = "https://www.dropbox.com/scl/fi/abc123xyz/unet_best.pth?rlkey=xyz123&dl=1"
+DROPBOX_URL = "https://www.dropbox.com/scl/fi/a8p2osunwyxxftnyip2fh/unet_best.pth?rlkey=459ce4ujuqc4b8qg8a3o1m0lo&st=89py7vry&dl=1"
 
 @st.cache_resource
 def download_model_from_dropbox():
